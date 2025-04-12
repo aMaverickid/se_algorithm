@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 项目特定
+models/cache/
+templates/inpainting/*.png
+templates/depth/*.png
+!templates/inpainting/README.md
+!templates/depth/README.md
+*.log
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 虚拟环境
+venv/
+.venv/
+ENV/ 
