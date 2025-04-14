@@ -46,8 +46,7 @@ def get_inpainting_model():
 async def create_inpainting(request: InpaintingRequest, background_tasks: BackgroundTasks):
     """Inpainting API"""
     try:
-        # 解码人脸图像 将base64编码的人脸图像转换为PIL图像
-        # 从 uploads/uploads.png 中获取人脸图像
+        # 解码人脸图像
         ## face_image = base64_to_image(request.face_image)
         face_image = Image.open("/home/lujingdian/SE_Proj/uploads/faces/face_1.png")
         # 获取模板图像
@@ -135,6 +134,11 @@ async def create_inpainting(request: InpaintingRequest, background_tasks: Backgr
             positive_prompt=request.positive_prompt,
             negative_prompt=request.negative_prompt,
         )
+
+        # 保存图像到 results 目录
+        results_dir = config.RESULTS_DIR
+        for i, img in enumerate(output_images):
+            img.save(os.path.join(results_dir, f"result_{i}.png"))
         
         # 将生成的图像转换为Base64字符串
         base64_images = [image_to_base64(img) for img in output_images]

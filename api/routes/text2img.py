@@ -31,8 +31,8 @@ def get_text2img_model():
         logger.info("初始化Text2Img模型")
         text2img_model = IPAdapterText2Img(
             device=config.DEVICE,
-            sd_model_name=config.STABLE_DIFFUSION_MODEL,
-            ip_adapter_path=config.IP_ADAPTER_MODEL,
+            sd_model_name=config.STABLE_DIFFUSION_MODEL_PATH,
+            ip_adapter_path=config.IP_ADAPTER_MODEL_PATH,
             ip_model_type="plus",
             scale=0.6,
         )

@@ -7,6 +7,9 @@ ROOT_DIR = Path(__file__).resolve().parent
 # 模型缓存目录
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", str(ROOT_DIR / "models" / "cache")))
 
+# 结果目录
+RESULTS_DIR = ROOT_DIR / "results"
+
 # 模板目录
 TEMPLATE_DIR = ROOT_DIR / "templates"
 INPAINTING_TEMPLATE_DIR = TEMPLATE_DIR / "inpainting"

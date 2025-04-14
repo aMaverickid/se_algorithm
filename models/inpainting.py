@@ -7,8 +7,6 @@ import torch
 from PIL import Image
 import numpy as np
 from diffusers import StableDiffusionInpaintPipeline, DDIMScheduler
-from diffusers.utils import load_image
-from safetensors.torch import load_file
 import sys
 from pathlib import Path
 
@@ -70,7 +68,7 @@ class IPAdapterInpainting(BaseIPAdapter):
             torch_dtype=self.torch_dtype,
         )
         
-        # 使用DDIM调度器
+        # 使用DDIM调度器，用来去除噪声
         self.pipeline.scheduler = DDIMScheduler.from_config(
             self.pipeline.scheduler.config
         )
@@ -83,304 +81,20 @@ class IPAdapterInpainting(BaseIPAdapter):
     
     def _load_ip_adapter(self):
         """加载IP-Adapter权重"""
-        # 确保指向models/cache/IP-Adapter/models目录
-        model_path = Path(self.ip_adapter_path) / "models"
+        logger.info("开始加载IP-Adapter权重")
         
-        if not model_path.exists():
-            raise FileNotFoundError(f"IP-Adapter模型目录不存在: {model_path}")
-        
-        logger.info(f"使用IP-Adapter模型目录: {model_path}")
-        
-        # 确定要加载的具体IP-Adapter权重
-        if self.ip_model_type == "base":
-            ip_adapter_path = model_path / "ip-adapter_sd15.safetensors"
-        elif self.ip_model_type == "plus":
-            ip_adapter_path = model_path / "ip-adapter-plus_sd15.safetensors"
-        elif self.ip_model_type == "plus_face":
-            ip_adapter_path = model_path / "ip-adapter-plus-face_sd15.safetensors"
-        else:
-            raise ValueError(f"不支持的IP-Adapter模型类型: {self.ip_model_type}")
-        
-        # 检查权重文件是否存在
-        if not ip_adapter_path.exists():
-            raise FileNotFoundError(f"IP-Adapter权重文件不存在: {ip_adapter_path}")
-        
-        logger.info(f"加载IP-Adapter权重: {ip_adapter_path}")
-        
-        # 图像编码器目录
-        image_encoder_path = model_path / "image_encoder"
-        if not image_encoder_path.exists():
-            raise FileNotFoundError(f"图像编码器目录不存在: {image_encoder_path}")
-        
-        # 使用safetensors格式的模型文件
-        image_proj_path = image_encoder_path / "model.safetensors"
-        if not image_proj_path.exists():
-            # 尝试使用备选文件名
-            image_proj_path = image_encoder_path / "pytorch_model.bin"
-            if not image_proj_path.exists():
-                raise FileNotFoundError(f"图像投影权重文件不存在: {image_proj_path}")
-        
-        logger.info(f"加载图像投影权重: {image_proj_path}")
-        
-        # 加载权重，根据文件扩展名选择不同的加载方法
-        if str(ip_adapter_path).endswith('.safetensors'):
-            ip_adapter_state_dict = load_file(ip_adapter_path)
-        else:
-            ip_adapter_state_dict = torch.load(ip_adapter_path, map_location=self.device)
-            
-        if str(image_proj_path).endswith('.safetensors'):
-            image_proj_state_dict = load_file(image_proj_path)
-        else:
-            image_proj_state_dict = torch.load(image_proj_path, map_location=self.device)
+        # 使用基类提供的通用方法加载权重
+        self.image_proj_model, ip_adapter_state_dict = self._load_ip_adapter_weights(
+            ip_adapter_path=self.ip_adapter_path,
+            ip_model_type=self.ip_model_type
+        )
         
         # 将图像投影权重添加到U-Net中
         self.pipeline.unet.load_state_dict(
             ip_adapter_state_dict, strict=False
         )
         
-        # 创建图像投影层
-        if self.ip_model_type == "base":
-            self.image_proj_model = self._create_base_image_proj(
-                image_proj_state_dict, cross_attention_dim=768
-            )
-        else:  # plus和plus_face使用相同的方式
-            self.image_proj_model = self._create_plus_image_proj(
-                image_proj_state_dict, cross_attention_dim=768
-            )
-        
         logger.info("IP-Adapter权重加载完成")
-    
-    def _create_base_image_proj(self, state_dict, cross_attention_dim=768):
-        """
-        创建基础IP-Adapter的图像投影层
-        
-        Args:
-            state_dict: 图像投影权重
-            cross_attention_dim: 交叉注意力维度
-        
-        Returns:
-            图像投影模型
-        """
-        import torch.nn as nn
-        
-        # 提取权重参数
-        proj_in = state_dict["proj.weight"].shape[1]
-        proj_out = state_dict["proj.weight"].shape[0]
-        
-        # 创建模型
-        image_proj_model = nn.Linear(proj_in, proj_out)
-        image_proj_model.load_state_dict(state_dict)
-        image_proj_model.to(self.device, dtype=self.torch_dtype)
-        image_proj_model.eval()
-        
-        return image_proj_model
-    
-    def _create_plus_image_proj(self, state_dict, cross_attention_dim=768):
-        """
-        创建Plus版IP-Adapter的图像投影层
-        
-        Args:
-            state_dict: 图像投影权重
-            cross_attention_dim: 交叉注意力维度
-        
-        Returns:
-            图像投影模型
-        """
-        import torch.nn as nn
-        
-        # 打印状态字典的键以进行调试
-        logger.info(f"图像投影状态字典包含以下键: {list(state_dict.keys())}")
-        
-        # 用于存储映射后的键
-        weight_keys = {}
-        
-        # 检测键名格式并创建映射
-        for key in state_dict.keys():
-            # 常见的键名格式:
-            # "0.weight", "layers.0.weight", "model.0.weight", "projection.0.weight" 等
-            if key.endswith('.weight') or key.endswith('.bias'):
-                parts = key.split('.')
-                # 提取层索引
-                for part in parts:
-                    if part.isdigit():
-                        layer_idx = int(part)
-                        suffix = parts[-1]  # weight 或 bias
-                        if suffix in ['weight', 'bias']:
-                            mapped_key = f"{layer_idx}.{suffix}"
-                            weight_keys[mapped_key] = key
-                            logger.debug(f"映射键: '{mapped_key}' -> '{key}'")
-        
-        # 如果没有找到映射键，使用可能的默认键
-        if not weight_keys:
-            logger.warning("无法识别权重键格式，尝试使用完整键名")
-            # 尝试找出可能的权重和偏置键
-            weight_keys = {k: k for k in state_dict.keys() if '.weight' in k or '.bias' in k}
-        
-        # 创建模型
-        image_proj_model = nn.Sequential(
-            nn.Linear(1280, 1280),
-            nn.LayerNorm(1280),
-            nn.GELU(),
-            nn.Linear(1280, cross_attention_dim),
-        )
-        
-        # 检查键是否存在
-        expected_keys = ["0.weight", "0.bias", "1.weight", "1.bias", "3.weight", "3.bias"]
-        missing_keys = [k for k in expected_keys if k not in weight_keys]
-        
-        if missing_keys:
-            # 尝试更一般的加载方法
-            logger.warning(f"找不到以下键: {missing_keys}，尝试使用Torch加载方法")
-            try:
-                # 尝试预处理状态字典以匹配Sequential模型预期的格式
-                processed_state_dict = {}
-                if all('projection.' in k for k in state_dict.keys() if 'weight' in k or 'bias' in k):
-                    # 处理projection.X.weight格式
-                    for k, v in state_dict.items():
-                        if 'projection.' in k:
-                            new_key = k.replace('projection.', '')
-                            processed_state_dict[new_key] = v
-                elif all('model.' in k for k in state_dict.keys() if 'weight' in k or 'bias' in k):
-                    # 处理model.X.weight格式
-                    for k, v in state_dict.items():
-                        if 'model.' in k:
-                            new_key = k.replace('model.', '')
-                            processed_state_dict[new_key] = v
-                else:
-                    # 检查是否可以直接使用状态字典
-                    try:
-                        image_proj_model.load_state_dict(state_dict)
-                        logger.info("成功直接加载状态字典")
-                        return image_proj_model.to(self.device, dtype=self.torch_dtype).eval()
-                    except Exception as e:
-                        logger.warning(f"直接加载失败: {str(e)}")
-                        processed_state_dict = state_dict
-                
-                # 尝试加载处理后的状态字典
-                image_proj_model.load_state_dict(processed_state_dict, strict=False)
-                logger.info("成功加载处理后的状态字典")
-            except Exception as e:
-                logger.error(f"尝试加载处理后的状态字典失败: {str(e)}")
-                # 最后尝试手动加载可用的键
-                logger.warning("尝试手动加载可用的权重")
-                for layer_idx, layer in enumerate(image_proj_model):
-                    if hasattr(layer, 'weight'):
-                        weight_key = f"{layer_idx}.weight"
-                        bias_key = f"{layer_idx}.bias"
-                        # 寻找任何包含layer_idx和weight/bias的键
-                        for k in state_dict.keys():
-                            if str(layer_idx) in k and 'weight' in k:
-                                logger.info(f"手动加载: {k} -> {layer_idx}.weight")
-                                layer.weight.data = state_dict[k].to(device=self.device, dtype=self.torch_dtype)
-                            if str(layer_idx) in k and 'bias' in k:
-                                logger.info(f"手动加载: {k} -> {layer_idx}.bias")
-                                layer.bias.data = state_dict[k].to(device=self.device, dtype=self.torch_dtype) 
-        else:
-            # 使用映射的键加载权重
-            try:
-                # 加载权重
-                image_proj_model[0].weight.data = state_dict[weight_keys.get("0.weight", "0.weight")].to(
-                    device=self.device, dtype=self.torch_dtype)
-                image_proj_model[0].bias.data = state_dict[weight_keys.get("0.bias", "0.bias")].to(
-                    device=self.device, dtype=self.torch_dtype)
-                image_proj_model[1].weight.data = state_dict[weight_keys.get("1.weight", "1.weight")].to(
-                    device=self.device, dtype=self.torch_dtype)
-                image_proj_model[1].bias.data = state_dict[weight_keys.get("1.bias", "1.bias")].to(
-                    device=self.device, dtype=self.torch_dtype)
-                image_proj_model[3].weight.data = state_dict[weight_keys.get("3.weight", "3.weight")].to(
-                    device=self.device, dtype=self.torch_dtype)
-                image_proj_model[3].bias.data = state_dict[weight_keys.get("3.bias", "3.bias")].to(
-                    device=self.device, dtype=self.torch_dtype)
-                
-                logger.info("成功使用映射键加载权重")
-            except KeyError as e:
-                logger.error(f"加载权重时发生KeyError: {str(e)}")
-                logger.error(f"可用键: {list(state_dict.keys())}")
-                logger.error(f"映射键: {weight_keys}")
-                raise KeyError(f"加载图像投影权重失败: {str(e)}. 请检查模型文件格式。")
-        
-        image_proj_model.to(self.device, dtype=self.torch_dtype)
-        image_proj_model.eval()
-        
-        return image_proj_model
-    
-    def _prepare_ip_adapter_features(self, face_image):
-        """
-        准备IP-Adapter特征
-        
-        Args:
-            face_image: 人脸图像
-            
-        Returns:
-            IP-Adapter特征
-        """
-        # 获取图像编码
-        image_embeds = self.encode_image(face_image)
-        
-        # 通过投影层处理
-        if self.ip_model_type == "base":
-            image_prompt_embeds = self.image_proj_model(image_embeds)
-        else:  # plus或plus_face
-            # 扩展维度模拟标记
-            embeds = image_embeds.unsqueeze(1)
-            # 投影并返回
-            image_prompt_embeds = self.image_proj_model(embeds)
-        
-        # 返回特征
-        uncond_image_prompt_embeds = torch.zeros_like(image_prompt_embeds)
-        
-        return image_prompt_embeds, uncond_image_prompt_embeds, image_embeds
-    
-    def _prepare_unet_features(self, image_prompt_embeds, uncond_image_prompt_embeds):
-        """
-        准备U-Net特征
-        
-        Args:
-            image_prompt_embeds: 条件图像特征
-            uncond_image_prompt_embeds: 无条件图像特征
-            
-        Returns:
-            带有IP-Adapter特征的unet处理方法
-        """
-        # 获取原始的U-Net前向传播方法
-        unet = self.pipeline.unet
-        orig_forward = unet.forward
-        
-        # 定义U-Net的新forward方法
-        def forward_with_ip_adapter(
-            sample,
-            timestep,
-            encoder_hidden_states,
-            cross_attention_kwargs=None,
-            **kwargs
-        ):
-            # 分离交叉注意力参数
-            cross_attention_kwargs = cross_attention_kwargs or {}
-            ip_scale = cross_attention_kwargs.pop("ip_adapter_scale", self.scale)
-            
-            # 使用原始forward计算基本输出
-            out = orig_forward(
-                sample,
-                timestep,
-                encoder_hidden_states,
-                cross_attention_kwargs=cross_attention_kwargs,
-                **kwargs
-            )
-            
-            # 添加IP-Adapter特征
-            # 这些特征已经在unet中注册
-            ip_hidden_states = torch.cat([
-                uncond_image_prompt_embeds, image_prompt_embeds
-            ])
-            ip_mask = kwargs.get("ip_adapter_mask")
-            
-            # 返回带有IP-Adapter特征的结果
-            return out
-        
-        # 替换U-Net的forward方法
-        unet.forward = forward_with_ip_adapter
-        
-        return unet.forward
     
     def generate(
         self,

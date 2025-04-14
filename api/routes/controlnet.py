@@ -32,9 +32,9 @@ def get_controlnet_model():
         logger.info("初始化ControlNet模型")
         controlnet_model = IPAdapterControlNet(
             device=config.DEVICE,
-            sd_model_name=config.STABLE_DIFFUSION_MODEL,
-            controlnet_model_name=config.CONTROLNET_DEPTH_MODEL,
-            ip_adapter_path=config.IP_ADAPTER_MODEL,
+            sd_model_name=config.STABLE_DIFFUSION_MODEL_PATH,
+            controlnet_model_name=config.CONTROLNET_DEPTH_MODEL_PATH,
+            ip_adapter_path=config.IP_ADAPTER_MODEL_PATH,
             ip_model_type="plus",
             scale=0.7,
         )

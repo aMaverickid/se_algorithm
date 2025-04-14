@@ -83,214 +83,20 @@ class IPAdapterText2Img(BaseIPAdapter):
     
     def _load_ip_adapter(self):
         """加载IP-Adapter权重"""
-        # 确保指向models/cache/IP-Adapter/models目录
-        model_path = Path(self.ip_adapter_path) / "models"
+        logger.info("开始加载IP-Adapter权重")
         
-        if not model_path.exists():
-            raise FileNotFoundError(f"IP-Adapter模型目录不存在: {model_path}")
-        
-        logger.info(f"使用IP-Adapter模型目录: {model_path}")
-        
-        # 确定要加载的具体IP-Adapter权重
-        if self.ip_model_type == "base":
-            ip_adapter_path = model_path / "ip-adapter_sd15.safetensors"
-        elif self.ip_model_type == "plus":
-            ip_adapter_path = model_path / "ip-adapter-plus_sd15.safetensors"
-        elif self.ip_model_type == "plus_face":
-            ip_adapter_path = model_path / "ip-adapter-plus-face_sd15.safetensors"
-        else:
-            raise ValueError(f"不支持的IP-Adapter模型类型: {self.ip_model_type}")
-        
-        # 检查权重文件是否存在
-        if not ip_adapter_path.exists():
-            raise FileNotFoundError(f"IP-Adapter权重文件不存在: {ip_adapter_path}")
-        
-        logger.info(f"加载IP-Adapter权重: {ip_adapter_path}")
-        
-        # 图像编码器目录
-        image_encoder_path = model_path / "image_encoder"
-        if not image_encoder_path.exists():
-            raise FileNotFoundError(f"图像编码器目录不存在: {image_encoder_path}")
-        
-        # 使用safetensors格式的模型文件
-        image_proj_path = image_encoder_path / "model.safetensors"
-        if not image_proj_path.exists():
-            # 尝试使用备选文件名
-            image_proj_path = image_encoder_path / "pytorch_model.bin"
-            if not image_proj_path.exists():
-                raise FileNotFoundError(f"图像投影权重文件不存在: {image_proj_path}")
-        
-        logger.info(f"加载图像投影权重: {image_proj_path}")
-        
-        # 加载权重，根据文件扩展名选择不同的加载方法
-        if str(ip_adapter_path).endswith('.safetensors'):
-            ip_adapter_state_dict = load_file(ip_adapter_path)
-        else:
-            ip_adapter_state_dict = torch.load(ip_adapter_path, map_location=self.device)
-            
-        if str(image_proj_path).endswith('.safetensors'):
-            image_proj_state_dict = load_file(image_proj_path)
-        else:
-            image_proj_state_dict = torch.load(image_proj_path, map_location=self.device)
+        # 使用基类提供的通用方法加载权重
+        self.image_proj_model, ip_adapter_state_dict = self._load_ip_adapter_weights(
+            ip_adapter_path=self.ip_adapter_path,
+            ip_model_type=self.ip_model_type
+        )
         
         # 将图像投影权重添加到U-Net中
         self.pipeline.unet.load_state_dict(
             ip_adapter_state_dict, strict=False
         )
         
-        # 创建图像投影层
-        if self.ip_model_type == "base":
-            self.image_proj_model = self._create_base_image_proj(
-                image_proj_state_dict, cross_attention_dim=768
-            )
-        else:  # plus和plus_face使用相同的方式
-            self.image_proj_model = self._create_plus_image_proj(
-                image_proj_state_dict, cross_attention_dim=768
-            )
-        
         logger.info("IP-Adapter权重加载完成")
-    
-    def _create_base_image_proj(self, state_dict, cross_attention_dim=768):
-        """
-        创建基础IP-Adapter的图像投影层
-        
-        Args:
-            state_dict: 图像投影权重
-            cross_attention_dim: 交叉注意力维度
-        
-        Returns:
-            图像投影模型
-        """
-        import torch.nn as nn
-        
-        # 提取权重参数
-        proj_in = state_dict["proj.weight"].shape[1]
-        proj_out = state_dict["proj.weight"].shape[0]
-        
-        # 创建模型
-        image_proj_model = nn.Linear(proj_in, proj_out)
-        image_proj_model.load_state_dict(state_dict)
-        image_proj_model.to(self.device, dtype=self.torch_dtype)
-        image_proj_model.eval()
-        
-        return image_proj_model
-    
-    def _create_plus_image_proj(self, state_dict, cross_attention_dim=768):
-        """
-        创建Plus版IP-Adapter的图像投影层
-        
-        Args:
-            state_dict: 图像投影权重
-            cross_attention_dim: 交叉注意力维度
-        
-        Returns:
-            图像投影模型
-        """
-        import torch.nn as nn
-        
-        # 创建模型
-        image_proj_model = nn.Sequential(
-            nn.Linear(1280, 1280),
-            nn.LayerNorm(1280),
-            nn.GELU(),
-            nn.Linear(1280, cross_attention_dim),
-        )
-        
-        # 加载权重
-        image_proj_model[0].weight.data = state_dict["0.weight"].to(
-            device=self.device, dtype=self.torch_dtype)
-        image_proj_model[0].bias.data = state_dict["0.bias"].to(
-            device=self.device, dtype=self.torch_dtype)
-        image_proj_model[1].weight.data = state_dict["1.weight"].to(
-            device=self.device, dtype=self.torch_dtype)
-        image_proj_model[1].bias.data = state_dict["1.bias"].to(
-            device=self.device, dtype=self.torch_dtype)
-        image_proj_model[3].weight.data = state_dict["3.weight"].to(
-            device=self.device, dtype=self.torch_dtype)
-        image_proj_model[3].bias.data = state_dict["3.bias"].to(
-            device=self.device, dtype=self.torch_dtype)
-        
-        image_proj_model.to(self.device, dtype=self.torch_dtype)
-        image_proj_model.eval()
-        
-        return image_proj_model
-    
-    def _prepare_ip_adapter_features(self, face_image):
-        """
-        准备IP-Adapter特征
-        
-        Args:
-            face_image: 人脸图像
-            
-        Returns:
-            IP-Adapter特征
-        """
-        # 获取图像编码
-        image_embeds = self.encode_image(face_image)
-        
-        # 通过投影层处理
-        if self.ip_model_type == "base":
-            image_prompt_embeds = self.image_proj_model(image_embeds)
-        else:  # plus或plus_face
-            # 扩展维度模拟标记
-            embeds = image_embeds.unsqueeze(1)
-            # 投影并返回
-            image_prompt_embeds = self.image_proj_model(embeds)
-        
-        # 返回特征
-        uncond_image_prompt_embeds = torch.zeros_like(image_prompt_embeds)
-        
-        return image_prompt_embeds, uncond_image_prompt_embeds, image_embeds
-    
-    def _prepare_unet_features(self, image_prompt_embeds, uncond_image_prompt_embeds):
-        """
-        准备U-Net特征
-        
-        Args:
-            image_prompt_embeds: 条件图像特征
-            uncond_image_prompt_embeds: 无条件图像特征
-            
-        Returns:
-            带有IP-Adapter特征的unet处理方法
-        """
-        # 获取原始的U-Net前向传播方法
-        unet = self.pipeline.unet
-        orig_forward = unet.forward
-        
-        # 定义U-Net的新forward方法
-        def forward_with_ip_adapter(
-            sample,
-            timestep,
-            encoder_hidden_states,
-            cross_attention_kwargs=None,
-            **kwargs
-        ):
-            # 分离交叉注意力参数
-            cross_attention_kwargs = cross_attention_kwargs or {}
-            ip_scale = cross_attention_kwargs.pop("ip_adapter_scale", self.scale)
-            
-            # 使用原始forward计算基本输出
-            out = orig_forward(
-                sample,
-                timestep,
-                encoder_hidden_states,
-                cross_attention_kwargs=cross_attention_kwargs,
-                **kwargs
-            )
-            
-            # 添加IP-Adapter特征
-            # 这些特征已经在unet中注册
-            ip_hidden_states = torch.cat([
-                uncond_image_prompt_embeds, image_prompt_embeds
-            ])
-            
-            # 返回带有IP-Adapter特征的结果
-            return out
-        
-        # 替换U-Net的forward方法
-        unet.forward = forward_with_ip_adapter
-        
-        return unet.forward
     
     def generate(
         self,
@@ -348,9 +154,9 @@ class IPAdapterText2Img(BaseIPAdapter):
                 negative_prompt=negative_prompt,
                 height=size[1],
                 width=size[0],
-                num_inference_steps=self.steps,
                 guidance_scale=guidance_scale,
                 num_images_per_prompt=num_images,
+                num_inference_steps=self.steps,
                 cross_attention_kwargs={"ip_adapter_scale": self.scale},
             )
             
