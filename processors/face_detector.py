@@ -16,162 +16,157 @@ import config
 logger = logging.getLogger(__name__)
 
 class FaceDetector:
-    """使用MediaPipe进行人脸检测和关键点识别"""
-    
+    """人脸检测器，使用mediapipe库定位图像中的人脸"""
+
     def __init__(self, min_detection_confidence=0.5):
         """
         初始化人脸检测器
         
         Args:
-            min_detection_confidence (float): 最小检测置信度
+            min_detection_confidence: 检测阈值，越高越严格，范围0-1
         """
+        logger.info(f"初始化FaceDetector，检测阈值: {min_detection_confidence}")
+        
+        # 初始化mediapipe人脸检测模块
         self.mp_face_detection = mp.solutions.face_detection
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.min_detection_confidence = min_detection_confidence
+        self.mp_drawing = mp.solutions.drawing_utils
         
-        # 初始化检测器
-        self.face_detection = self.mp_face_detection.FaceDetection(
-            min_detection_confidence=min_detection_confidence
-        )
-        
-        # 初始化关键点检测器
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
+        # 创建人脸检测器实例
+        self.face_detector = self.mp_face_detection.FaceDetection(
             min_detection_confidence=min_detection_confidence
         )
     
     def detect_faces(self, image):
         """
-        检测图像中的人脸
+        检测图像中的所有人脸
         
         Args:
-            image: PIL图像或图像路径
+            image: PIL图像或numpy数组或图像路径
             
         Returns:
-            包含人脸边界框坐标的列表，格式为 [xmin, ymin, width, height, confidence]
+            检测到的人脸列表，每个人脸包含边界框和关键点信息
         """
-        # 确保图像为PIL格式
+        # 预处理图像
         if isinstance(image, str):
             image = Image.open(image).convert("RGB")
         
-        if not isinstance(image, Image.Image):
-            raise ValueError("image必须是PIL.Image.Image类型或有效的图像路径")
+        if isinstance(image, Image.Image):
+            # 将PIL图像转换为numpy数组
+            image_np = np.array(image)
+        else:
+            # 已经是numpy数组
+            image_np = image
+            
+        # 确保图像是RGB格式
+        if len(image_np.shape) == 2:  # 灰度图像
+            image_np = cv2.cvtColor(image_np, cv2.COLOR_GRAY2RGB)
+        elif image_np.shape[2] == 4:  # RGBA图像
+            image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
+            
+        # 图像需要转换为RGB格式供mediapipe处理
+        image_np_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+            
+        # 执行人脸检测
+        results = self.face_detector.process(image_np_rgb)
         
-        # 转换为OpenCV格式
-        image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        
-        # 执行检测
-        results = self.face_detection.process(cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB))
-        
+        # 解析结果
         faces = []
         if results.detections:
             for detection in results.detections:
-                bbox = detection.location_data.relative_bounding_box
-                ih, iw, _ = image_cv.shape
+                face_data = {
+                    'score': detection.score[0],
+                    'box': self._get_box_from_detection(detection, image_np.shape[1], image_np.shape[0]),
+                    'keypoints': self._get_keypoints_from_detection(detection, image_np.shape[1], image_np.shape[0])
+                }
+                faces.append(face_data)
                 
-                xmin = max(0, int(bbox.xmin * iw))
-                ymin = max(0, int(bbox.ymin * ih))
-                width = min(int(bbox.width * iw), iw - xmin)
-                height = min(int(bbox.height * ih), ih - ymin)
-                
-                faces.append([xmin, ymin, width, height, detection.score[0]])
-        
         return faces
     
-    def detect_face_landmarks(self, image):
+    def detect_face(self, image):
         """
-        检测图像中的人脸关键点
+        检测图像中的主要人脸（得分最高或面积最大的一个）
         
         Args:
-            image: PIL图像或图像路径
+            image: PIL图像或numpy数组或图像路径
             
         Returns:
-            关键点列表和人脸边界框
+            主要人脸信息，如果未检测到则返回None
         """
-        # 确保图像为PIL格式
-        if isinstance(image, str):
-            image = Image.open(image).convert("RGB")
-        
-        if not isinstance(image, Image.Image):
-            raise ValueError("image必须是PIL.Image.Image类型或有效的图像路径")
-        
-        # 转换为OpenCV格式
-        image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        
-        # 执行关键点检测
-        results = self.face_mesh.process(cv2.cvtColor(image_cv, cv2.COLOR_BGR2RGB))
-        
-        landmarks = []
-        bbox = None
-        
-        if results.multi_face_landmarks:
-            face_landmarks = results.multi_face_landmarks[0]
-            
-            # 提取关键点
-            ih, iw, _ = image_cv.shape
-            for landmark in face_landmarks.landmark:
-                x = int(landmark.x * iw)
-                y = int(landmark.y * ih)
-                landmarks.append((x, y))
-            
-            # 计算包围盒
-            x_coords = [landmark.x * iw for landmark in face_landmarks.landmark]
-            y_coords = [landmark.y * ih for landmark in face_landmarks.landmark]
-            
-            xmin = max(0, int(min(x_coords)))
-            ymin = max(0, int(min(y_coords)))
-            xmax = min(int(max(x_coords)), iw)
-            ymax = min(int(max(y_coords)), ih)
-            
-            bbox = [xmin, ymin, xmax - xmin, ymax - ymin]
-        
-        return landmarks, bbox
-    
-    def crop_face(self, image, padding=0.2):
-        """
-        裁剪图像中的人脸区域
-        
-        Args:
-            image: PIL图像或图像路径
-            padding (float): 边界框周围的额外填充比例
-            
-        Returns:
-            裁剪后的PIL图像，如果没有检测到人脸则返回None
-        """
-        # 确保图像为PIL格式
-        if isinstance(image, str):
-            image = Image.open(image).convert("RGB")
-        
-        # 检测人脸
         faces = self.detect_faces(image)
         
         if not faces:
             logger.warning("未检测到人脸")
             return None
+            
+        # 选择得分最高的人脸
+        main_face = max(faces, key=lambda face: face['score'])
+        logger.debug(f"检测到主要人脸，得分: {main_face['score']:.2f}")
         
-        # 找到最大的人脸
-        main_face = sorted(faces, key=lambda x: x[2] * x[3], reverse=True)[0]
-        x, y, w, h = main_face[:4]
-        
-        # 添加padding
-        padding_x = int(w * padding)
-        padding_y = int(h * padding)
-        
-        # 计算裁剪区域
-        left = max(0, x - padding_x)
-        top = max(0, y - padding_y)
-        right = min(image.width, x + w + padding_x)
-        bottom = min(image.height, y + h + padding_y)
-        
-        # 裁剪人脸
-        face_image = image.crop((left, top, right, bottom))
-        
-        return face_image
+        return main_face
     
-    def __del__(self):
-        """清理资源"""
-        if hasattr(self, 'face_detection'):
-            self.face_detection.close()
-        if hasattr(self, 'face_mesh'):
-            self.face_mesh.close() 
+    def get_face_box(self, image, expand_ratio=0.0):
+        """
+        获取图像中主要人脸的边界框
+        
+        Args:
+            image: PIL图像或numpy数组或图像路径
+            expand_ratio: 边界框扩展比例，0.1表示在各方向扩展10%
+            
+        Returns:
+            (x_min, y_min, x_max, y_max)格式的边界框，如果未检测到则返回None
+        """
+        face = self.detect_face(image)
+        
+        if not face:
+            return None
+            
+        box = face['box']
+        
+        # 应用扩展比例
+        if expand_ratio > 0:
+            width = box[2] - box[0]
+            height = box[3] - box[1]
+            
+            # 计算扩展量
+            x_expand = width * expand_ratio
+            y_expand = height * expand_ratio
+            
+            # 扩展边界框
+            expanded_box = (
+                max(0, box[0] - x_expand),
+                max(0, box[1] - y_expand),
+                box[2] + x_expand,
+                box[3] + y_expand
+            )
+            
+            return expanded_box
+            
+        return box
+    
+    def _get_box_from_detection(self, detection, image_width, image_height):
+        """从mediapipe检测结果提取边界框坐标"""
+        bbox = detection.location_data.relative_bounding_box
+        x_min = max(0, bbox.xmin * image_width)
+        y_min = max(0, bbox.ymin * image_height)
+        width = bbox.width * image_width
+        height = bbox.height * image_height
+        
+        # 确保边界框不超出图像范围
+        x_max = min(image_width, x_min + width)
+        y_max = min(image_height, y_min + height)
+        
+        return (int(x_min), int(y_min), int(x_max), int(y_max))
+    
+    def _get_keypoints_from_detection(self, detection, image_width, image_height):
+        """从mediapipe检测结果提取关键点坐标"""
+        keypoints = {}
+        
+        # 提取关键点（右眼、左眼、鼻尖、嘴巴中心、右耳、左耳）
+        keypoint_names = ['right_eye', 'left_eye', 'nose_tip', 'mouth_center', 'right_ear', 'left_ear']
+        
+        for i, name in enumerate(keypoint_names):
+            if i < len(detection.location_data.relative_keypoints):
+                kp = detection.location_data.relative_keypoints[i]
+                keypoints[name] = (int(kp.x * image_width), int(kp.y * image_height))
+        
+        return keypoints

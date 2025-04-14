@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
 
+# 随机种子
+SEED = 42
+
 # 项目根目录
 ROOT_DIR = Path(__file__).resolve().parent
 

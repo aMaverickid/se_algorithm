@@ -34,7 +34,7 @@ def get_inpainting_model():
         logger.info("初始化Inpainting模型")
         inpainting_model = IPAdapterInpainting(
             device=config.DEVICE,
-            sd_model_name=config.STABLE_DIFFUSION_MODEL_PATH,
+            sd_model_path=config.STABLE_DIFFUSION_MODEL_PATH,
             ip_adapter_path=config.IP_ADAPTER_MODEL_PATH,
             ip_model_type="plus",
             scale=0.7,
@@ -47,11 +47,19 @@ async def create_inpainting(request: InpaintingRequest, background_tasks: Backgr
     """Inpainting API"""
     try:
         # 解码人脸图像
-        ## face_image = base64_to_image(request.face_image)
-        face_image = Image.open("/home/lujingdian/SE_Proj/uploads/faces/face_1.png")
+        face_image = None
+        if request.face_path:
+            face_image = Image.open(request.face_path).convert("RGB")
+        elif request.face_image:
+            face_image = base64_to_image(request.face_image)
+        else:
+            raise HTTPException(status_code=400, detail="必须提供face_path或face_image")
+            
         # 获取模板图像
         template_image = None
-        if request.template_id:
+        if request.template_path:
+            template_image = Image.open(request.template_path).convert("RGB")
+        elif request.template_id:
             # 使用指定的模板ID
             template_path = os.path.join(config.INPAINTING_TEMPLATE_DIR, request.template_id)
             if os.path.exists(template_path):
@@ -67,7 +75,7 @@ async def create_inpainting(request: InpaintingRequest, background_tasks: Backgr
             
             # 创建模板生成请求
             template_request = TemplateGenerationRequest(
-                face_image=request.face_image,
+                face_image=request.face_image if request.face_image else image_to_base64(face_image),
                 method=request.template_method,
                 strength=request.template_strength
             )
@@ -99,7 +107,9 @@ async def create_inpainting(request: InpaintingRequest, background_tasks: Backgr
             logger.info(f"自动生成掩码，类型: {request.mask_type}")
             
             # 确定要使用的图像
-            source_image = request.face_image if request.mask_type == "face" else image_to_base64(template_image)
+            source_image = request.face_image if request.face_image else image_to_base64(face_image)
+            if request.mask_type != "face":
+                source_image = image_to_base64(template_image)
             
             # 创建掩码生成请求
             mask_request = MaskGenerationRequest(

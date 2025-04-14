@@ -24,6 +24,8 @@ var/
 models/cache/
 templates/inpainting/*.png
 templates/depth/*.png
+uploads/
+results/
 !templates/inpainting/README.md
 !templates/depth/README.md
 *.log
@@ -43,3 +45,5 @@ Thumbs.db
 venv/
 .venv/
 ENV/ 
+
+stable-diffusion-v1-5/

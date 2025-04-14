@@ -25,22 +25,34 @@ class ModelInfo(BaseModel):
 # Inpainting请求/响应模型
 class InpaintingRequest(BaseModel):
     """Inpainting请求数据模型"""
-    face_image: str = Field(..., description="Base64编码的人脸图像")
-    template_id: Optional[str] = Field(None, description="模板ID，如果为None则使用template_image")
-    template_image: Optional[str] = Field(None, description="Base64编码的模板图像，如果template_id不为None则忽略")
-    mask_image: Optional[str] = Field(None, description="Base64编码的掩码图像，如果为None则自动生成")
+    # 基本输入参数 - 人脸图像（支持两种输入方式）
+    face_path: Optional[str] = Field(None, description="人脸图像的本地文件路径")
+    face_image: Optional[str] = Field(None, description="Base64编码的人脸图像")
+    
+    # 模板图像参数（支持多种输入方式）
+    template_path: Optional[str] = Field(None, description="模板图像的本地文件路径")
+    template_id: Optional[str] = Field(None, description="使用指定的模板ID")
+    template_image: Optional[str] = Field(None, description="Base64编码的模板图像")
+    
+    # 自动生成模板选项
+    auto_generate_template: bool = Field(False, description="是否自动生成无脸模板")
+    template_method: str = Field("auto", description="模板生成方法，可选值：'auto', 'blur', 'mask'")
+    template_strength: float = Field(0.8, description="模板生成强度，0.0-1.0")
+    
+    # 掩码相关参数
+    mask_image: Optional[str] = Field(None, description="Base64编码的掩码图像")
+    auto_generate_mask: bool = Field(False, description="是否自动生成掩码")
+    mask_type: str = Field("face", description="掩码类型，可选值：'face'(人脸区域), 'template'(无脸区域)")
+    mask_padding_ratio: float = Field(0.1, description="人脸掩码边界框扩展比例")
+    
+    # 生成控制参数
     strength: float = Field(0.85, description="改变强度，0.0-1.0")
     guidance_scale: float = Field(7.5, description="分类器自由指导比例")
     num_images: int = Field(1, description="生成的图像数量", ge=1, le=4) # range 1-4
     seed: Optional[int] = Field(None, description="随机种子")
     positive_prompt: Optional[str] = Field("masterpiece, best quality, high quality", description="正面提示词")
     negative_prompt: Optional[str] = Field("lowres, bad anatomy, bad hands, cropped, worst quality", description="负面提示词")
-    auto_generate_template: bool = Field(False, description="如果为True且未提供template_id/template_image，则自动生成无脸模板")
-    template_method: str = Field("auto", description="自动生成无脸模板的方法，可选值：'auto', 'blur', 'mask'")
-    template_strength: float = Field(0.8, description="自动生成无脸模板的强度，0.0-1.0")
-    auto_generate_mask: bool = Field(False, description="如果为True且未提供mask_image，则自动生成掩码")
-    mask_type: str = Field("face", description="自动生成掩码的类型，可选值：'face'(人脸区域), 'template'(无脸区域)")
-    mask_padding_ratio: float = Field(0.1, description="自动生成人脸掩码时的边界框扩展比例")
+
 
 class InpaintingResponse(BaseModel):
     """Inpainting响应数据模型"""
@@ -97,30 +109,31 @@ class TemplatesResponse(BaseModel):
 # 无脸模板生成请求/响应模型
 class TemplateGenerationRequest(BaseModel):
     """无脸模板生成请求数据模型"""
-    face_image: Optional[str] = Field(None, description="Base64编码的人脸图像，如不提供则使用face_id")
-    face_id: Optional[str] = Field(None, description="已上传的人脸图像ID")
+    face_path: Optional[str] = Field(None, description="人脸图像的本地文件路径")
+    face_image: Optional[str] = Field(None, description="Base64编码的人脸图像")
     method: str = Field("auto", description="生成方法，可选值：'auto', 'blur', 'mask'")
     strength: float = Field(0.8, description="处理强度，0.0-1.0")
 
 class TemplateGenerationResponse(BaseModel):
     """无脸模板生成响应数据模型"""
     success: bool = Field(..., description="是否成功生成")
-    template_image: str = Field(..., description="Base64编码的无脸模板图像")
-    template_id: Optional[str] = Field(None, description="生成的模板ID，如果已保存")
+    template_id: str = Field(..., description="生成的模板ID，如果已保存")
+    template_path: str = Field(..., description="生成的模板图像保存路径")
+    template_image: Optional[str] = Field(None, description="Base64编码的模板图像")
     message: Optional[str] = Field(None, description="附加信息")
 
 # 掩码生成请求/响应模型
 class MaskGenerationRequest(BaseModel):
     """掩码生成请求数据模型"""
-    image: Optional[str] = Field(None, description="Base64编码的图像，如不提供则使用image_id")
-    image_id: Optional[str] = Field(None, description="已上传的图像ID")
+    image_path: Optional[str] = Field(None, description="图像的本地文件路径")
+    image: Optional[str] = Field(None, description="Base64编码的图像")
     mask_type: str = Field("face", description="掩码类型，可选值：'face'(人脸区域), 'template'(无脸区域)")
-    padding_ratio: float = Field(0.1, description="人脸边界框的扩展比例，仅对mask_type='face'有效")
-    feather_amount: int = Field(10, description="边缘羽化程度")
+    padding_ratio: float = Field(0.1, description="人脸掩码边界框扩展比例")
 
 class MaskGenerationResponse(BaseModel):
     """掩码生成响应数据模型"""
     success: bool = Field(..., description="是否成功生成")
-    mask_image: str = Field(..., description="Base64编码的掩码图像")
-    mask_id: Optional[str] = Field(None, description="生成的掩码ID，如果已保存")
+    mask_id: str = Field(..., description="生成的掩码ID，如果已保存")
+    mask_path: str = Field(..., description="生成的掩码图像保存路径")
+    mask_image: Optional[str] = Field(None, description="Base64编码的掩码图像")
     message: Optional[str] = Field(None, description="附加信息") 

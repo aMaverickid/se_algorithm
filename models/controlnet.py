@@ -1,5 +1,5 @@
 """
-IP-Adapter ControlNet模型，用于结合深度图控制图像生成
+IP-Adapter ControlNet模型，用于通过深度图控制人脸图像的生成
 """
 import os
 import logging
@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from models.base import BaseIPAdapter
-from utils.image_utils import resize_image, save_output_image
+from utils.image_utils import resize_image, save_output_image, get_sample_templates
 from processors.depth_estimator import DepthEstimator
 
 logger = logging.getLogger(__name__)
@@ -98,23 +98,6 @@ class IPAdapterControlNet(BaseIPAdapter):
         if self.device == "cuda":
             self.pipeline.enable_xformers_memory_efficient_attention()
     
-    def _load_ip_adapter(self):
-        """加载IP-Adapter权重"""
-        logger.info("开始加载IP-Adapter权重")
-        
-        # 使用基类提供的通用方法加载权重
-        self.image_proj_model, ip_adapter_state_dict = self._load_ip_adapter_weights(
-            ip_adapter_path=self.ip_adapter_path,
-            ip_model_type=self.ip_model_type
-        )
-        
-        # 将图像投影权重添加到U-Net中
-        self.pipeline.unet.load_state_dict(
-            ip_adapter_state_dict, strict=False
-        )
-        
-        logger.info("IP-Adapter权重加载完成")
-    
     def generate(
         self,
         face_image,
@@ -165,12 +148,8 @@ class IPAdapterControlNet(BaseIPAdapter):
             torch.manual_seed(seed)
             np.random.seed(seed)
         
-        # 准备IP-Adapter特征
-        image_prompt_embeds, uncond_image_prompt_embeds, _ = self._prepare_ip_adapter_features(face_resized)
-        
-        # 修改U-Net前向传播以使用IP-Adapter特征
-        original_forward = self.pipeline.unet.forward
-        self.pipeline.unet.forward = self._prepare_unet_features(image_prompt_embeds, uncond_image_prompt_embeds)
+        # 设置IP-Adapter缩放因子
+        self.pipeline.set_ip_adapter_scale(self.scale)
         
         # 生成图像
         try:
@@ -182,11 +161,8 @@ class IPAdapterControlNet(BaseIPAdapter):
                 guidance_scale=guidance_scale,
                 num_images_per_prompt=num_images,
                 controlnet_conditioning_scale=controlnet_conditioning_scale,
-                cross_attention_kwargs={"ip_adapter_scale": self.scale},
+                ip_adapter_image=face_resized,
             )
-            
-            # 恢复原始U-Net前向传播
-            self.pipeline.unet.forward = original_forward
             
             # 处理输出
             images = output.images
@@ -204,8 +180,6 @@ class IPAdapterControlNet(BaseIPAdapter):
             return images
             
         except Exception as e:
-            # 确保恢复原始U-Net前向传播
-            self.pipeline.unet.forward = original_forward
             logger.error(f"生成过程中发生错误: {str(e)}")
             raise
     
@@ -219,5 +193,4 @@ class IPAdapterControlNet(BaseIPAdapter):
         Returns:
             模板路径列表
         """
-        from utils.image_utils import get_sample_templates
         return get_sample_templates("depth", n) 

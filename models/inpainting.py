@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from models.base import BaseIPAdapter
-from utils.image_utils import resize_image, save_output_image
+from utils.image_utils import resize_image, save_output_image, get_sample_templates
 from processors.mask_generator import MaskGenerator
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class IPAdapterInpainting(BaseIPAdapter):
     def __init__(
         self, 
         device=config.DEVICE,
-        sd_model_name=config.STABLE_DIFFUSION_MODEL_PATH,
+        sd_model_path=config.STABLE_DIFFUSION_MODEL_PATH,
         ip_adapter_path=config.IP_ADAPTER_MODEL_PATH,
         ip_model_type="plus",
         scale=0.7,
@@ -36,7 +36,7 @@ class IPAdapterInpainting(BaseIPAdapter):
         
         Args:
             device (str): 设备类型，'cuda'或'cpu'
-            sd_model_name (str): Stable Diffusion 模型路径
+            sd_model_path (str): Stable Diffusion 模型路径
             ip_adapter_path (str): IP-Adapter 模型路径
             ip_model_type (str): IP-Adapter 模型类型，'base'或'plus'或'plus_face'
             scale (float): IP-Adapter的条件缩放因子
@@ -51,20 +51,18 @@ class IPAdapterInpainting(BaseIPAdapter):
         
         # 初始化掩码生成器
         self.mask_generator = MaskGenerator()
-        
         # 加载Stable Diffusion Inpainting模型
-        self._load_pipeline(sd_model_name)
-        
+        self._load_pipeline(sd_model_path)
         # 加载IP-Adapter权重
         self._load_ip_adapter()
     
-    def _load_pipeline(self, sd_model_name):
+    def _load_pipeline(self, sd_model_path):
         """加载Stable Diffusion Inpainting模型"""
-        logger.info(f"加载Stable Diffusion Inpainting模型: {sd_model_name}")
+        logger.info(f"加载Stable Diffusion Inpainting模型: {sd_model_path}")
         
         # 加载基础inpainting模型
         self.pipeline = StableDiffusionInpaintPipeline.from_pretrained(
-            sd_model_name,
+            sd_model_path,
             torch_dtype=self.torch_dtype,
         )
         
@@ -79,23 +77,6 @@ class IPAdapterInpainting(BaseIPAdapter):
         self.pipeline.vae.eval()
         self.pipeline.text_encoder.eval()
     
-    def _load_ip_adapter(self):
-        """加载IP-Adapter权重"""
-        logger.info("开始加载IP-Adapter权重")
-        
-        # 使用基类提供的通用方法加载权重
-        self.image_proj_model, ip_adapter_state_dict = self._load_ip_adapter_weights(
-            ip_adapter_path=self.ip_adapter_path,
-            ip_model_type=self.ip_model_type
-        )
-        
-        # 将图像投影权重添加到U-Net中
-        self.pipeline.unet.load_state_dict(
-            ip_adapter_state_dict, strict=False
-        )
-        
-        logger.info("IP-Adapter权重加载完成")
-    
     def generate(
         self,
         face_image,
@@ -104,8 +85,7 @@ class IPAdapterInpainting(BaseIPAdapter):
         strength=config.INPAINTING_STRENGTH,
         guidance_scale=config.GUIDANCE_SCALE,
         num_images=config.NUM_IMAGES_PER_PROMPT,
-        seed=None,
-        output_path=None,
+        seed=config.SEED,
         positive_prompt="masterpiece, best quality, high quality",
         negative_prompt="lowres, bad anatomy, bad hands, cropped, worst quality",
     ):
@@ -148,17 +128,12 @@ class IPAdapterInpainting(BaseIPAdapter):
             mask = Image.open(mask).convert("L")
             mask = resize_image(mask, template_resized.size, keep_aspect_ratio=False)
         
-        # 设置随机种子
+        # 设置IP-Adapter缩放因子
+        self.pipeline.set_ip_adapter_scale(self.scale)
+
         if seed is not None:
             torch.manual_seed(seed)
             np.random.seed(seed)
-        
-        # 准备IP-Adapter特征
-        image_prompt_embeds, uncond_image_prompt_embeds, _ = self._prepare_ip_adapter_features(face_resized)
-        
-        # 修改U-Net前向传播以使用IP-Adapter特征
-        original_forward = self.pipeline.unet.forward
-        self.pipeline.unet.forward = self._prepare_unet_features(image_prompt_embeds, uncond_image_prompt_embeds)
         
         # 生成图像
         try:
@@ -171,30 +146,21 @@ class IPAdapterInpainting(BaseIPAdapter):
                 num_images_per_prompt=num_images,
                 num_inference_steps=self.steps,
                 strength=strength,
-                cross_attention_kwargs={"ip_adapter_scale": self.scale},
+                ip_adapter_image=face_resized,
             )
-            
-            # 恢复原始U-Net前向传播
-            self.pipeline.unet.forward = original_forward
             
             # 处理输出
             images = output.images
             
-            # 保存图像（如果需要）
-            if output_path:
-                if num_images == 1:
-                    save_output_image(images[0], output_path)
-                else:
-                    for i, image in enumerate(images):
-                        path, ext = os.path.splitext(output_path)
-                        numbered_path = f"{path}_{i}{ext}"
-                        save_output_image(image, numbered_path)
+            # 保存图像
+            import uuid
+            inpainting_id = str(uuid.uuid4())
+            for i, image in enumerate(images):
+                image.save(f"results/inpainting_{inpainting_id}_{i}.png")
             
             return images
             
         except Exception as e:
-            # 确保恢复原始U-Net前向传播
-            self.pipeline.unet.forward = original_forward
             logger.error(f"生成过程中发生错误: {str(e)}")
             raise
     
@@ -208,5 +174,4 @@ class IPAdapterInpainting(BaseIPAdapter):
         Returns:
             模板路径列表
         """
-        from utils.image_utils import get_sample_templates
         return get_sample_templates("inpainting", n) 
