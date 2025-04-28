@@ -46,4 +46,6 @@ venv/
 .venv/
 ENV/ 
 
-stable-diffusion-v1-5/
+face/
+test/
+templates/

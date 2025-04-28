@@ -204,16 +204,16 @@ def save_output_image(image, output_dir=None, filename=None, prefix="output_", s
     
     return output_path
 
-def get_sample_templates(template_type="inpainting", n=3):
+def get_sample_templates(template_type="inpainting", number=1):
     """
     获取示例模板图像
     
     Args:
         template_type: 模板类型，"inpainting"或"depth"
-        n: 返回的模板数量
+        number: 返回的模板序号
         
     Returns:
-        模板图像路径列表
+        template: 模板图像 PIL格式
     """
     # 确定模板目录
     if template_type == "inpainting":
@@ -221,18 +221,11 @@ def get_sample_templates(template_type="inpainting", n=3):
     elif template_type == "depth":
         template_dir = config.DEPTH_TEMPLATE_DIR
     else:
-        raise ValueError(f"不支持的模板类型: {template_type}")
-    
-    # 获取目录中的所有图像文件
-    image_extensions = ('.jpg', '.jpeg', '.png', '.bmp')
-    template_files = [
-        f for f in os.listdir(template_dir)
-        if f.lower().endswith(image_extensions) # 判断文件名小写是否以image_extensions结尾
-    ]
-    
-    # 如果没有足够的模板，返回警告
-    if len(template_files) < n:
-        logger.warning(f"请求{n}个模板，但目录中只有{len(template_files)}个")
-        
-    # 返回前n个模板的路径
-    return [os.path.join(template_dir, f) for f in template_files[:n]] 
+        raise ValueError(f"不支持的模板类型: {template_type}，请选择inpainting或depth")
+
+    template_path = os.path.join(template_dir, f"template_{number}.png")
+    if not os.path.exists(template_path):
+        raise ValueError(f"模板文件不存在: {template_path}")
+
+    template = Image.open(template_path)
+    return template

@@ -4,8 +4,6 @@ from api.models import (
     ControlNetRequest, ControlNetResponse,
     Text2ImgRequest, Text2ImgResponse,
     ModelInfoResponse, TemplatesResponse,
-    TemplateGenerationRequest, TemplateGenerationResponse,
-    MaskGenerationRequest, MaskGenerationResponse,
 )
 
 __all__ = [

@@ -3,19 +3,19 @@ IP-Adapter Inpainting模型，用于将人脸图像与无脸模板合成
 """
 import os
 import logging
-import torch
 from PIL import Image
 import numpy as np
 from diffusers import StableDiffusionInpaintPipeline, DDIMScheduler
 import sys
 from pathlib import Path
+import uuid
 
 # 添加项目根目录到路径
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 from models.base import BaseIPAdapter
-from utils.image_utils import resize_image, save_output_image, get_sample_templates
-from processors.mask_generator import MaskGenerator
+from utils.image_utils import resize_image, get_sample_templates
+from processors.face_detector import FaceDetector
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,7 @@ class IPAdapterInpainting(BaseIPAdapter):
         sd_model_path=config.STABLE_DIFFUSION_MODEL_PATH,
         ip_adapter_path=config.IP_ADAPTER_MODEL_PATH,
         ip_model_type="plus",
-        scale=0.7,
-        steps=config.NUM_INFERENCE_STEPS,
+        scale=1.2,  # 添加scale参数，inpainting任务通常需要更高的缩放因子，从0.9调整为1.2
     ):
         """
         初始化IP-Adapter Inpainting模型
@@ -38,25 +37,25 @@ class IPAdapterInpainting(BaseIPAdapter):
             device (str): 设备类型，'cuda'或'cpu'
             sd_model_path (str): Stable Diffusion 模型路径
             ip_adapter_path (str): IP-Adapter 模型路径
-            ip_model_type (str): IP-Adapter 模型类型，'base'或'plus'或'plus_face'
+            ip_model_type (str): IP-Adapter 模型类型，'base'或'plus'或'plus_face'或'full_face'
             scale (float): IP-Adapter的条件缩放因子
             steps (int): 推理步数
         """
         super().__init__(device=device)
         
-        self.ip_adapter_path = ip_adapter_path
         self.ip_model_type = ip_model_type
-        self.scale = scale
-        self.steps = steps
+        self.ip_adapter_path = ip_adapter_path
+        self.scale = scale  # 设置IP-Adapter缩放因子
+
+        self.ip_adapter = None
+        self.face_detector = FaceDetector()
         
-        # 初始化掩码生成器
-        self.mask_generator = MaskGenerator()
         # 加载Stable Diffusion Inpainting模型
-        self._load_pipeline(sd_model_path)
-        # 加载IP-Adapter权重
-        self._load_ip_adapter()
+        self.load_pipeline(sd_model_path)
+        # 加载IP-Adapter权重 Base 中实现
+        self.load_ip_adapter()
     
-    def _load_pipeline(self, sd_model_path):
+    def load_pipeline(self, sd_model_path):
         """加载Stable Diffusion Inpainting模型"""
         logger.info(f"加载Stable Diffusion Inpainting模型: {sd_model_path}")
         
@@ -64,6 +63,7 @@ class IPAdapterInpainting(BaseIPAdapter):
         self.pipeline = StableDiffusionInpaintPipeline.from_pretrained(
             sd_model_path,
             torch_dtype=self.torch_dtype,
+            variant="fp16"
         )
         
         # 使用DDIM调度器，用来去除噪声
@@ -79,86 +79,78 @@ class IPAdapterInpainting(BaseIPAdapter):
     
     def generate(
         self,
-        face_image,
-        template_image,
+        face,
+        template,
         mask=None,
+        ip_adapter_scale=None,
+        prompt="",
         strength=config.INPAINTING_STRENGTH,
+        num_inference_steps=config.NUM_INFERENCE_STEPS,
         guidance_scale=config.GUIDANCE_SCALE,
-        num_images=config.NUM_IMAGES_PER_PROMPT,
-        seed=config.SEED,
-        positive_prompt="masterpiece, best quality, high quality",
-        negative_prompt="lowres, bad anatomy, bad hands, cropped, worst quality",
     ):
         """
         使用IP-Adapter Inpainting生成图像
         
         Args:
-            face_image: 人脸图像
-            template_image: 无脸模板图像
-            mask: 掩码图像，如果为None则自动生成
-            strength: 改变的强度
-            guidance_scale: 分类器自由指导比例
-            num_images: 生成的图像数量
-            seed: 随机种子
-            output_path: 输出路径
-            positive_prompt: 正面提示词
-            negative_prompt: 负面提示词
+            face: 人脸图像 PIL格式
+            template: 无脸模板图像 PIL格式
+            mask: 可选 掩码图像 PIL格式
+            prompt: 提示词
+            ip_adapter_scale: IP-Adapter缩放因子
+            strength: 范围 0--1 值越大原始图像的内容被忽略越多，生成结果更偏向模型自由发挥
+            num_inference_steps: 推理步数 步数越大生成结果越精细 但是生成时间越长
+            guidance_scale: 分类器自由指导比例 值越大生成结果越遵循提示词 但是生成结果越不自然
             
         Returns:
-            生成的图像列表
+            result: 风格化后的结果 图像的列表
         """
-        # 预处理图像
-        if isinstance(face_image, str):
-            face_image = Image.open(face_image).convert("RGB")
-        if isinstance(template_image, str):
-            template_image = Image.open(template_image).convert("RGB")
-        
-        # 调整图像大小
-        face_resized = resize_image(face_image, config.FACE_RESOLUTION)
-        template_resized = resize_image(template_image, config.OUTPUT_RESOLUTION)
-        
         # 如果没有提供掩码，则自动生成
         if mask is None:
             logger.info("自动生成模板掩码")
-            mask = self.mask_generator.generate_template_mask(
-                template_resized, 
-                target_size=template_resized.size
-            )
-        elif isinstance(mask, str):
-            mask = Image.open(mask).convert("L")
-            mask = resize_image(mask, template_resized.size, keep_aspect_ratio=False)
+            # 使用更大的模糊半径和边缘模糊处理
+            mask = self.face_detector.generate_mask(face, blur_radius=5, remove_holes=True, detailed_edges=True)
+            # 调整掩码尺寸
+            mask = resize_image(mask, (512, 512))
+            # 保存掩码用于调试
+            mask.save("/home/lujingdian/SE_Proj/test/mask.png")
+            logger.info(f"自动生成模板掩码完成")
+        else:
+            # 对提供的掩码增加模糊处理，改善边缘过渡
+            from PIL import ImageFilter
+            mask = mask.filter(ImageFilter.GaussianBlur(radius=3))
+            logger.info("对提供的掩码进行了边缘模糊处理")
+            
+        # 增强提示词，添加面部相关描述，提高人脸生成质量
+        if not prompt:
+            prompt = "realistic face, high quality, high detail"
+        else:
+            prompt = f"{prompt}, realistic face, high quality, high detail"
+        
+        logger.info(f"使用提示词: {prompt}")
         
         # 设置IP-Adapter缩放因子
-        self.pipeline.set_ip_adapter_scale(self.scale)
-
-        if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-        
+        if ip_adapter_scale is None:
+            # 使用默认的scale值
+            self.pipeline.set_ip_adapter_scale(self.scale)
+            logger.info(f"使用默认IP-Adapter缩放因子: {self.scale}")
+        else:
+            # 使用传入的scale值
+            self.pipeline.set_ip_adapter_scale(ip_adapter_scale)
+            logger.info(f"使用自定义IP-Adapter缩放因子: {ip_adapter_scale}")
+            
         # 生成图像
         try:
-            output = self.pipeline(
-                prompt=positive_prompt,
-                negative_prompt=negative_prompt,
-                image=template_resized,
+            result = self.pipeline(
+                image=template,
                 mask_image=mask,
-                guidance_scale=guidance_scale,
-                num_images_per_prompt=num_images,
-                num_inference_steps=self.steps,
+                ip_adapter_image=face,
+                prompt=prompt,
                 strength=strength,
-                ip_adapter_image=face_resized,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
             )
             
-            # 处理输出
-            images = output.images
-            
-            # 保存图像
-            import uuid
-            inpainting_id = str(uuid.uuid4())
-            for i, image in enumerate(images):
-                image.save(f"results/inpainting_{inpainting_id}_{i}.png")
-            
-            return images
+            return result
             
         except Exception as e:
             logger.error(f"生成过程中发生错误: {str(e)}")

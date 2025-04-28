@@ -31,7 +31,7 @@ class BaseIPAdapter(ABC):
         self.ip_model_type = "plus"  # 默认IP-Adapter模型类型 其类型包括base, plus, plus_face
         self.ip_adapter_path = None  # 将在子类中设置具体路径
     
-    def _load_ip_adapter(self):
+    def load_ip_adapter(self):
         """加载IP-Adapter模型"""
         # 模型类型到文件名的映射
         model_type_map = {
@@ -46,40 +46,15 @@ class BaseIPAdapter(ABC):
             logger.warning(f"未知的IP-Adapter模型类型: {self.ip_model_type}，默认使用'plus'")
             self.ip_model_type = "plus"
         
-        # 确定模型文件名
         model_filename = model_type_map[self.ip_model_type]
-        
-        # 构建完整的模型文件路径
         ip_adapter_dir = Path(self.ip_adapter_path)
         
-        # 如果目录中包含models子目录，添加到路径中
         models_dir = ip_adapter_dir / "models"
-        if models_dir.exists() and models_dir.is_dir():
-            model_path = models_dir / model_filename
-            ip_adapter_dir = models_dir
-        else:
-            model_path = ip_adapter_dir / model_filename
+        model_path = models_dir / model_filename
+        ip_adapter_dir = models_dir
         
         logger.info(f"加载IP-Adapter模型: {model_path}")
         logger.info(f"使用模型类型: {self.ip_model_type}")
-        
-        # 检查模型文件是否存在
-        if not model_path.exists():
-            available_models = []
-            try:
-                if models_dir.exists() and models_dir.is_dir():
-                    available_models = [f.name for f in models_dir.glob("*.safetensors") if f.is_file()]
-                elif ip_adapter_dir.exists() and ip_adapter_dir.is_dir():
-                    available_models = [f.name for f in ip_adapter_dir.glob("*.safetensors") if f.is_file()]
-                
-                if available_models:
-                    logger.error(f"模型文件 {model_filename} 不存在，可用模型有: {', '.join(available_models)}")
-                else:
-                    logger.error(f"模型文件 {model_filename} 不存在，且目录中没有找到可用的.safetensors模型文件")
-            except Exception as e:
-                logger.error(f"检查可用模型时出错: {str(e)}")
-            
-            raise FileNotFoundError(f"无法找到IP-Adapter模型文件: {model_path}")
         
         # 加载IP-Adapter模型
         self.pipeline.load_ip_adapter(

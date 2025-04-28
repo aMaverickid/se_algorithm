@@ -25,39 +25,24 @@ class ModelInfo(BaseModel):
 # Inpainting请求/响应模型
 class InpaintingRequest(BaseModel):
     """Inpainting请求数据模型"""
-    # 基本输入参数 - 人脸图像（支持两种输入方式）
-    face_path: Optional[str] = Field(None, description="人脸图像的本地文件路径")
-    face_image: Optional[str] = Field(None, description="Base64编码的人脸图像")
-    
-    # 模板图像参数（支持多种输入方式）
-    template_path: Optional[str] = Field(None, description="模板图像的本地文件路径")
-    template_id: Optional[str] = Field(None, description="使用指定的模板ID")
-    template_image: Optional[str] = Field(None, description="Base64编码的模板图像")
-    
-    # 自动生成模板选项
-    auto_generate_template: bool = Field(False, description="是否自动生成无脸模板")
-    template_method: str = Field("auto", description="模板生成方法，可选值：'auto', 'blur', 'mask'")
-    template_strength: float = Field(0.8, description="模板生成强度，0.0-1.0")
-    
-    # 掩码相关参数
-    mask_image: Optional[str] = Field(None, description="Base64编码的掩码图像")
-    auto_generate_mask: bool = Field(False, description="是否自动生成掩码")
-    mask_type: str = Field("face", description="掩码类型，可选值：'face'(人脸区域), 'template'(无脸区域)")
-    mask_padding_ratio: float = Field(0.1, description="人脸掩码边界框扩展比例")
-    
-    # 生成控制参数
-    strength: float = Field(0.85, description="改变强度，0.0-1.0")
-    guidance_scale: float = Field(7.5, description="分类器自由指导比例")
-    num_images: int = Field(1, description="生成的图像数量", ge=1, le=4) # range 1-4
-    seed: Optional[int] = Field(None, description="随机种子")
-    positive_prompt: Optional[str] = Field("masterpiece, best quality, high quality", description="正面提示词")
-    negative_prompt: Optional[str] = Field("lowres, bad anatomy, bad hands, cropped, worst quality", description="负面提示词")
+    face: str = Field(..., description="Base64编码的人脸图像")
 
+    template_id: Optional[int] = Field(1, description="使用指定的模板ID")
+    template: Optional[str] = Field(None, description="Base64编码的模板图像")
+    mask: Optional[str] = Field(None, description="Base64编码的掩码图像")
+
+    # 生成控制参数
+    ip_adapter_scale: Optional[float] = Field(None, description="IP-Adapter缩放因子")
+    strength: Optional[float] = Field(0.85, description="人脸与模板的融合强度，范围0-1，值越大融合越强")
+    prompt: Optional[str] = Field("", description="提示词")
+    num_inference_steps: Optional[int] = Field(50, description="推理步数，范围20-100，越高越精细，但生成时间越长")
+    guidance_scale: Optional[float] = Field(7.5, description="文本提示相关性控制，范围1-20，越高越遵循文本提示，低则更自由")
 
 class InpaintingResponse(BaseModel):
     """Inpainting响应数据模型"""
-    images: List[str] = Field(..., description="Base64编码的生成图像列表")
-    parameters: Dict[str, Any] = Field(..., description="生成参数")
+    success: bool = Field(..., description="是否成功")
+    result: Optional[str] = Field(None, description="Base64编码的生成图像")
+    message: Optional[str] = Field(None, description="附加信息")
 
 # ControlNet请求/响应模型
 class ControlNetRequest(BaseModel):
@@ -105,35 +90,31 @@ class TemplatesResponse(BaseModel):
     templates: List[TemplateInfo] = Field(..., description="可用模板列表")
     type: str = Field(..., description="模板类型")
 
+class MediapipeMaskRequest(BaseModel):
+    """使用Mediapipe生成掩码请求数据模型"""
+    face: str = Field(..., description="Base64编码的人脸")
+    blur_radius: Optional[int] = Field(2, description="掩码边缘模糊半径，值越大边缘越平滑")
+    remove_holes: Optional[bool] = Field(True, description="是否移除掩码中的小孔洞")
+    detailed_edges: Optional[bool] = Field(False, description="是否生成更细致的边缘")
 
-# 无脸模板生成请求/响应模型
-class TemplateGenerationRequest(BaseModel):
-    """无脸模板生成请求数据模型"""
-    face_path: Optional[str] = Field(None, description="人脸图像的本地文件路径")
-    face_image: Optional[str] = Field(None, description="Base64编码的人脸图像")
-    method: str = Field("auto", description="生成方法，可选值：'auto', 'blur', 'mask'")
-    strength: float = Field(0.8, description="处理强度，0.0-1.0")
-
-class TemplateGenerationResponse(BaseModel):
-    """无脸模板生成响应数据模型"""
+class MediapipeMaskResponse(BaseModel):
+    """使用Mediapipe生成掩码响应数据模型"""
     success: bool = Field(..., description="是否成功生成")
-    template_id: str = Field(..., description="生成的模板ID，如果已保存")
-    template_path: str = Field(..., description="生成的模板图像保存路径")
-    template_image: Optional[str] = Field(None, description="Base64编码的模板图像")
+    mask: Optional[str] = Field(None, description="Base64编码的掩码图像")
     message: Optional[str] = Field(None, description="附加信息")
 
-# 掩码生成请求/响应模型
-class MaskGenerationRequest(BaseModel):
-    """掩码生成请求数据模型"""
-    image_path: Optional[str] = Field(None, description="图像的本地文件路径")
-    image: Optional[str] = Field(None, description="Base64编码的图像")
-    mask_type: str = Field("face", description="掩码类型，可选值：'face'(人脸区域), 'template'(无脸区域)")
-    padding_ratio: float = Field(0.1, description="人脸掩码边界框扩展比例")
 
-class MaskGenerationResponse(BaseModel):
-    """掩码生成响应数据模型"""
+class MediapipeTemplateRequest(BaseModel):
+    """使用Mediapipe生成无脸模板请求数据模型"""
+    face: str = Field(..., description="Base64编码的人脸")
+    blur_radius: Optional[int] = Field(2, description="模板边缘模糊半径，值越大边缘越平滑")
+    remove_holes: Optional[bool] = Field(True, description="是否移除模板中的小孔洞")
+    detailed_edges: Optional[bool] = Field(False, description="是否生成更细致的边缘")
+    mask_type: Optional[str] = Field("inpainting", description="模板类型，可选值：'transparent'(透明背景), 'white'(白色背景), 'black'(黑色背景), 'red'(红色背景), 'edge_preserved'(保留边缘轮廓), 'inpainting'(专为inpainting优化的掩码)")
+    edge_blur_radius: Optional[int] = Field(0, description="边缘额外模糊半径，用于为inpainting创建更平滑的过渡")
+
+class MediapipeTemplateResponse(BaseModel):
+    """使用Mediapipe生成无脸模板响应数据模型"""
     success: bool = Field(..., description="是否成功生成")
-    mask_id: str = Field(..., description="生成的掩码ID，如果已保存")
-    mask_path: str = Field(..., description="生成的掩码图像保存路径")
-    mask_image: Optional[str] = Field(None, description="Base64编码的掩码图像")
-    message: Optional[str] = Field(None, description="附加信息") 
+    template: Optional[str] = Field(None, description="Base64编码的无脸模板图像")
+    message: Optional[str] = Field(None, description="附加信息")

@@ -87,7 +87,6 @@ fuser -k 8000/tcp
 │   └── text2img.py     # 文本到图像模型
 ├── processors/         # 图像处理器
 │   ├── face_detector.py # 人脸检测
-│   ├── mask_generator.py # 掩码生成
 │   └── depth_estimator.py # 深度估计
 ├── utils/              # 工具函数
 ├── templates/          # 模板目录
