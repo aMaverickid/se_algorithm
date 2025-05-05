@@ -49,3 +49,5 @@ ENV/
 face/
 test/
 templates/
+docs/
+InstantID/

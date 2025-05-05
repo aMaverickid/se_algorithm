@@ -5,6 +5,7 @@ import os
 import logging
 from PIL import Image
 import numpy as np
+import torch
 from diffusers import StableDiffusionInpaintPipeline, DDIMScheduler
 import sys
 from pathlib import Path
@@ -13,13 +14,12 @@ import uuid
 # 添加项目根目录到路径
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
-from models.base import BaseIPAdapter
 from utils.image_utils import resize_image, get_sample_templates
 from processors.face_detector import FaceDetector
 
 logger = logging.getLogger(__name__)
 
-class IPAdapterInpainting(BaseIPAdapter):
+class IPAdapterInpainting:
     """IP-Adapter Inpainting模型类"""
     
     def __init__(
@@ -41,7 +41,9 @@ class IPAdapterInpainting(BaseIPAdapter):
             scale (float): IP-Adapter的条件缩放因子
             steps (int): 推理步数
         """
-        super().__init__(device=device)
+        self.device = device
+        self.torch_dtype = torch.float16 if device == "cuda" else torch.float32
+        self.pipeline = None  # 扩散模型
         
         self.ip_model_type = ip_model_type
         self.ip_adapter_path = ip_adapter_path
@@ -52,7 +54,7 @@ class IPAdapterInpainting(BaseIPAdapter):
         
         # 加载Stable Diffusion Inpainting模型
         self.load_pipeline(sd_model_path)
-        # 加载IP-Adapter权重 Base 中实现
+        # 加载IP-Adapter权重
         self.load_ip_adapter()
     
     def load_pipeline(self, sd_model_path):
@@ -76,6 +78,38 @@ class IPAdapterInpainting(BaseIPAdapter):
         self.pipeline.unet.eval()
         self.pipeline.vae.eval()
         self.pipeline.text_encoder.eval()
+    
+    def load_ip_adapter(self):
+        """加载IP-Adapter模型"""
+        # 模型类型到文件名的映射
+        model_type_map = {
+            "base": "ip-adapter_sd15.safetensors",
+            "plus": "ip-adapter-plus_sd15.safetensors",
+            "plus_face": "ip-adapter-plus-face_sd15.safetensors",
+            "full_face": "ip-adapter-full-face_sd15.safetensors"
+        }
+        
+        # 确保模型类型有效
+        if self.ip_model_type not in model_type_map:
+            logger.warning(f"未知的IP-Adapter模型类型: {self.ip_model_type}，默认使用'plus'")
+            self.ip_model_type = "plus"
+        
+        model_filename = model_type_map[self.ip_model_type]
+        ip_adapter_dir = Path(self.ip_adapter_path)
+        
+        models_dir = ip_adapter_dir / "models"
+        model_path = models_dir / model_filename
+        ip_adapter_dir = models_dir
+        
+        logger.info(f"加载IP-Adapter模型: {model_path}")
+        logger.info(f"使用模型类型: {self.ip_model_type}")
+        
+        # 加载IP-Adapter模型
+        self.pipeline.load_ip_adapter(
+            pretrained_model_name_or_path_or_dict=str(ip_adapter_dir),
+            subfolder="",
+            weight_name=model_filename
+        )
     
     def generate(
         self,
@@ -166,4 +200,13 @@ class IPAdapterInpainting(BaseIPAdapter):
         Returns:
             模板路径列表
         """
-        return get_sample_templates("inpainting", n) 
+        return get_sample_templates("inpainting", n)
+        
+    def __del__(self):
+        """清理资源"""
+        if hasattr(self, 'pipeline') and self.pipeline is not None:
+            del self.pipeline
+        
+        # 清理CUDA缓存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache() 
