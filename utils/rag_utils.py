@@ -1,381 +1,325 @@
 """
-RAG（检索增强生成）工具模块，提供文档处理、向量化和检索功能
+检索增强生成(RAG)相关工具
 """
-import os
-import sys
 import logging
+import os
 import json
 import uuid
 import shutil
-from typing import List, Dict, Any, Optional, Union, Tuple
-from pathlib import Path
+import asyncio
 import numpy as np
-import time
-
-# 添加项目根目录到路径
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+import aiofiles
+from pathlib import Path
 import config
 
+# 尝试导入向量数据库相关库
+try:
+    import faiss
+    from sentence_transformers import SentenceTransformer
+    VECTOR_SEARCH_AVAILABLE = True
+except ImportError:
+    VECTOR_SEARCH_AVAILABLE = False
+    
 logger = logging.getLogger(__name__)
 
-try:
-    import lancedb
-    from lancedb.embeddings import EmbeddingFunctionRegistry
-    from lancedb.pydantic import LanceModel, Vector
-    from sentence_transformers import SentenceTransformer
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-    
-    # 文件处理库
-    import pypdf
-    import docx
-    import markdown
-    from unstructured.partition.auto import partition
-except ImportError:
-    logger.warning("缺少RAG相关库，请安装: pip install lancedb sentence-transformers langchain-text-splitters unstructured pypdf markdown python-docx")
+# 文档存储目录
+DOCUMENTS_DIR = Path(config.ROOT_DIR) / "documents"
+DOCUMENTS_DIR.mkdir(exist_ok=True)
 
-class DocumentChunk(LanceModel):
-    """文档块模型，用于向量数据库存储"""
-    id: str
-    text: str
-    metadata: Dict[str, Any]
-    embedding: Vector
+# 向量索引目录 
+VECTOR_INDEX_DIR = DOCUMENTS_DIR / "vector_index"
+VECTOR_INDEX_DIR.mkdir(exist_ok=True)
 
-class RAGProcessor:
-    """
-    RAG处理器，提供文档的加载、处理、向量化和检索功能
-    """
+# 文档元数据文件
+METADATA_FILE = DOCUMENTS_DIR / "metadata.json"
+
+class RAGManager:
+    """检索增强生成管理器"""
     
-    def __init__(self, 
-                 db_path: Optional[str] = None,
-                 embedding_model: Optional[str] = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-                 device: str = config.DEVICE,
-                 chunk_size: int = 1000,
-                 chunk_overlap: int = 200):
-        """
-        初始化RAG处理器
+    def __init__(self):
+        """初始化RAG管理器"""
+        self.documents_dir = DOCUMENTS_DIR
+        self.metadata_file = METADATA_FILE
+        self.vector_index_dir = VECTOR_INDEX_DIR
         
-        Args:
-            db_path: 向量数据库路径，默认为config.DOCS_DIR/"vectordb"
-            embedding_model: 嵌入模型名称或路径
-            device: 运行设备，'cuda'或'cpu'
-            chunk_size: 文档分块大小
-            chunk_overlap: 文档分块重叠大小
-        """
-        self.db_path = db_path or (config.DOCS_DIR / "vectordb")
-        self.embedding_model_name = embedding_model
-        self.device = device
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
+        # 加载文档元数据
+        self.metadata = self._load_metadata()
         
-        # 创建向量数据库目录
-        os.makedirs(self.db_path, exist_ok=True)
+        # 初始化向量模型和索引
+        self.model = None
+        self.index = None
+        self.doc_ids = []
         
-        # 初始化嵌入模型
-        self._init_embedding_model()
-        
-        # 初始化数据库连接
-        self._init_db()
-        
-        # 文本分割器
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            separators=["\n\n", "\n", "。", "，", " ", ""]
-        )
-    
-    def _init_embedding_model(self):
-        """初始化嵌入模型"""
-        try:
-            logger.info(f"加载嵌入模型: {self.embedding_model_name}")
-            self.embedding_model = SentenceTransformer(
-                self.embedding_model_name, 
-                device=self.device
-            )
-            self.embedding_dimension = self.embedding_model.get_sentence_embedding_dimension()
-            logger.info(f"嵌入模型加载完成，向量维度: {self.embedding_dimension}")
-        except Exception as e:
-            logger.error(f"加载嵌入模型失败: {str(e)}")
-            raise
-    
-    def _init_db(self):
-        """初始化向量数据库"""
-        try:
-            logger.info(f"连接向量数据库: {self.db_path}")
-            self.db = lancedb.connect(self.db_path)
+        if VECTOR_SEARCH_AVAILABLE:
+            asyncio.create_task(self._initialize_vector_search())
+            logger.info("正在异步初始化向量搜索...")
+        else:
+            logger.warning("向量搜索不可用，请安装faiss-cpu和sentence-transformers库")
             
-            # 检查并创建文档表
-            if "documents" not in self.db.table_names():
-                logger.info("创建文档表")
-                schema = DocumentChunk.schema()
-                self.document_table = self.db.create_table(
-                    "documents", 
-                    schema=schema,
-                    mode="create"
-                )
+    def _load_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """加载文档元数据"""
+        if not self.metadata_file.exists():
+            with open(self.metadata_file, 'w', encoding='utf-8') as f:
+                json.dump({}, f, ensure_ascii=False, indent=2)
+            return {}
+            
+        try:
+            with open(self.metadata_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"加载元数据文件出错: {str(e)}")
+            return {}
+            
+    async def _save_metadata(self):
+        """保存文档元数据"""
+        try:
+            async with aiofiles.open(self.metadata_file, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(self.metadata, ensure_ascii=False, indent=2))
+        except Exception as e:
+            logger.error(f"保存元数据文件出错: {str(e)}")
+            
+    async def _initialize_vector_search(self):
+        """初始化向量搜索"""
+        if not VECTOR_SEARCH_AVAILABLE:
+            return
+            
+        try:
+            # 加载sentence transformer模型
+            self.model = SentenceTransformer('distiluse-base-multilingual-cased-v1')
+            logger.info("已加载文本嵌入模型")
+            
+            # 检查是否存在索引文件
+            index_file = self.vector_index_dir / "faiss_index.bin"
+            doc_ids_file = self.vector_index_dir / "doc_ids.json"
+            
+            if index_file.exists() and doc_ids_file.exists():
+                # 加载现有索引
+                self.index = faiss.read_index(str(index_file))
+                
+                async with aiofiles.open(doc_ids_file, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                    self.doc_ids = json.loads(content)
+                    
+                logger.info(f"已加载向量索引，包含 {len(self.doc_ids)} 个文档块")
             else:
-                self.document_table = self.db.open_table("documents")
-            
-            logger.info("向量数据库初始化完成")
+                # 创建新索引
+                await self._rebuild_index()
+                
         except Exception as e:
-            logger.error(f"初始化向量数据库失败: {str(e)}")
-            raise
-    
-    def load_document(self, file_path: Union[str, Path], metadata: Optional[Dict[str, Any]] = None) -> str:
+            logger.exception(f"初始化向量搜索出错: {str(e)}")
+            
+    async def _rebuild_index(self):
+        """重建向量索引"""
+        if not VECTOR_SEARCH_AVAILABLE or not self.model:
+            return
+            
+        try:
+            all_chunks = []
+            all_ids = []
+            
+            # 收集所有文档块
+            for doc_id, info in self.metadata.items():
+                doc_file = self.documents_dir / f"{doc_id}.json"
+                if not doc_file.exists():
+                    continue
+                    
+                async with aiofiles.open(doc_file, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                    doc_data = json.loads(content)
+                    
+                for chunk in doc_data.get("chunks", []):
+                    all_chunks.append(chunk["content"])
+                    all_ids.append(f"{doc_id}:{chunk['chunk_id']}")
+                    
+            if not all_chunks:
+                logger.info("没有文档块可索引")
+                return
+                
+            # 计算嵌入
+            embeddings = self.model.encode(all_chunks)
+            vector_dim = embeddings.shape[1]
+            
+            # 创建和填充FAISS索引
+            self.index = faiss.IndexFlatIP(vector_dim)  # 内积相似度(点积)
+            self.index = faiss.IndexIDMap(self.index)   # 映射到文档ID
+            
+            # 添加向量到索引
+            faiss.normalize_L2(embeddings)  # 归一化向量
+            self.index.add_with_ids(embeddings, np.arange(len(all_ids)))
+            self.doc_ids = all_ids
+            
+            # 保存索引和ID映射
+            faiss.write_index(self.index, str(self.vector_index_dir / "faiss_index.bin"))
+            
+            async with aiofiles.open(self.vector_index_dir / "doc_ids.json", 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(self.doc_ids))
+                
+            logger.info(f"已重建向量索引，包含 {len(self.doc_ids)} 个文档块")
+            
+        except Exception as e:
+            logger.exception(f"重建索引出错: {str(e)}")
+            
+    async def add_document(self, content: str, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        加载文档并提取文本内容
+        添加新文档
         
         Args:
-            file_path: 文档路径
+            content: 文档内容
             metadata: 文档元数据
             
         Returns:
-            文档文本内容
+            包含文档ID和状态的字典
         """
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise FileNotFoundError(f"文件不存在: {file_path}")
-        
-        # 基本元数据
-        if metadata is None:
-            metadata = {}
-        
-        metadata.update({
-            "file_name": file_path.name,
-            "file_path": str(file_path),
-            "file_size": file_path.stat().st_size,
-            "file_type": file_path.suffix.lower(),
-            "created_at": time.time()
-        })
-        
-        # 根据文件类型选择处理方法
-        file_type = file_path.suffix.lower()
-        
         try:
-            if file_type == ".txt":
-                with open(file_path, "r", encoding="utf-8") as f:
-                    text = f.read()
-            
-            elif file_type == ".pdf":
-                text = self._load_pdf(file_path)
-            
-            elif file_type in [".docx", ".doc"]:
-                text = self._load_docx(file_path)
-            
-            elif file_type in [".md", ".markdown"]:
-                text = self._load_markdown(file_path)
-            
-            elif file_type in [".html", ".htm"]:
-                text = self._load_html(file_path)
-            
-            else:
-                # 尝试使用unstructured库处理其他格式
-                text = self._load_with_unstructured(file_path)
-            
-            return text
-            
-        except Exception as e:
-            logger.error(f"加载文档失败: {str(e)}")
-            raise
-    
-    def _load_pdf(self, file_path: Path) -> str:
-        """加载PDF文档"""
-        text = ""
-        try:
-            with open(file_path, "rb") as f:
-                pdf = pypdf.PdfReader(f)
-                for page in pdf.pages:
-                    text += page.extract_text() + "\n\n"
-        except Exception as e:
-            logger.error(f"处理PDF文档失败: {str(e)}")
-            # 尝试使用unstructured作为备选方案
-            text = self._load_with_unstructured(file_path)
-        
-        return text
-    
-    def _load_docx(self, file_path: Path) -> str:
-        """加载Word文档"""
-        try:
-            doc = docx.Document(file_path)
-            return "\n\n".join([para.text for para in doc.paragraphs if para.text])
-        except Exception as e:
-            logger.error(f"处理Word文档失败: {str(e)}")
-            # 尝试使用unstructured作为备选方案
-            return self._load_with_unstructured(file_path)
-    
-    def _load_markdown(self, file_path: Path) -> str:
-        """加载Markdown文档"""
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                md_text = f.read()
-            
-            # 移除markdown语法
-            html = markdown.markdown(md_text)
-            # 简单地去除HTML标签
-            import re
-            text = re.sub(r'<[^>]+>', '', html)
-            return text
-        except Exception as e:
-            logger.error(f"处理Markdown文档失败: {str(e)}")
-            # 直接返回原文本作为备选方案
-            with open(file_path, "r", encoding="utf-8") as f:
-                return f.read()
-    
-    def _load_html(self, file_path: Path) -> str:
-        """加载HTML文档"""
-        try:
-            from bs4 import BeautifulSoup
-            with open(file_path, "r", encoding="utf-8") as f:
-                soup = BeautifulSoup(f.read(), "html.parser")
-            
-            # 获取文本，忽略脚本和样式
-            for script in soup(["script", "style"]):
-                script.extract()
-            
-            text = soup.get_text()
-            # 整理文本格式
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = '\n'.join(chunk for chunk in chunks if chunk)
-            return text
-        except Exception as e:
-            logger.error(f"处理HTML文档失败: {str(e)}")
-            # 尝试使用unstructured作为备选方案
-            return self._load_with_unstructured(file_path)
-    
-    def _load_with_unstructured(self, file_path: Path) -> str:
-        """使用unstructured库加载文档"""
-        try:
-            elements = partition(str(file_path))
-            return "\n\n".join([str(el) for el in elements])
-        except Exception as e:
-            logger.error(f"使用unstructured处理文档失败: {str(e)}")
-            # 对于二进制文件，可能无法提取文本
-            return f"无法提取文件内容: {file_path.name}"
-    
-    def add_document(self, 
-                    file_path: Union[str, Path], 
-                    metadata: Optional[Dict[str, Any]] = None, 
-                    doc_id: Optional[str] = None) -> str:
-        """
-        添加文档到向量数据库
-        
-        Args:
-            file_path: 文档路径
-            metadata: 文档元数据
-            doc_id: 文档ID，如不提供则自动生成
-            
-        Returns:
-            文档ID
-        """
-        # 加载文档
-        text = self.load_document(file_path, metadata)
-        
-        # 为文档生成唯一ID
-        if doc_id is None:
             doc_id = str(uuid.uuid4())
-        
-        # 文档元数据
-        if metadata is None:
-            metadata = {}
-        
-        # 添加文档ID到元数据
-        metadata["doc_id"] = doc_id
-        
-        # 分割文档
-        chunks = self.text_splitter.split_text(text)
-        
-        # 向量化并存储
-        for i, chunk in enumerate(chunks):
-            # 生成块ID
-            chunk_id = f"{doc_id}_{i}"
+            timestamp = datetime.now().isoformat()
             
-            # 更新块级元数据
-            chunk_metadata = metadata.copy()
-            chunk_metadata.update({
-                "chunk_id": chunk_id,
-                "chunk_index": i,
-                "chunk_count": len(chunks)
+            # 准备元数据
+            metadata = metadata or {}
+            metadata.update({
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "size": len(content),
             })
             
-            # 向量化
-            embedding = self.embed_text(chunk)
+            # 分块处理文档
+            chunks = self._chunk_document(content)
             
-            # 创建文档块
-            document_chunk = DocumentChunk(
-                id=chunk_id,
-                text=chunk,
-                metadata=chunk_metadata,
-                embedding=embedding.tolist()
-            )
+            # 创建文档数据
+            doc_data = {
+                "doc_id": doc_id,
+                "metadata": metadata,
+                "chunks": [
+                    {"chunk_id": i, "content": chunk}
+                    for i, chunk in enumerate(chunks)
+                ]
+            }
             
-            # 存储到数据库
-            self.document_table.add([document_chunk])
-        
-        logger.info(f"文档添加成功: {doc_id}, 共{len(chunks)}个块")
-        return doc_id
-    
-    def embed_text(self, text: str) -> np.ndarray:
+            # 保存文档
+            doc_file = self.documents_dir / f"{doc_id}.json"
+            async with aiofiles.open(doc_file, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(doc_data, ensure_ascii=False, indent=2))
+                
+            # 更新元数据
+            self.metadata[doc_id] = {
+                "doc_id": doc_id,
+                "metadata": metadata,
+                "chunk_count": len(chunks)
+            }
+            await self._save_metadata()
+            
+            # 异步更新索引
+            if VECTOR_SEARCH_AVAILABLE and self.model and self.index:
+                asyncio.create_task(self._update_document_vectors(doc_data))
+                
+            return {
+                "success": True,
+                "document_id": doc_id,
+                "message": "文档添加成功"
+            }
+            
+        except Exception as e:
+            logger.exception(f"添加文档出错: {str(e)}")
+            return {
+                "success": False,
+                "error": {"message": f"添加文档失败: {str(e)}"}
+            }
+            
+    async def _update_document_vectors(self, doc_data: Dict[str, Any]):
+        """更新文档向量"""
+        if not VECTOR_SEARCH_AVAILABLE or not self.model or not self.index:
+            return
+            
+        try:
+            doc_id = doc_data["doc_id"]
+            chunks = [chunk["content"] for chunk in doc_data["chunks"]]
+            chunk_ids = [f"{doc_id}:{chunk['chunk_id']}" for chunk in doc_data["chunks"]]
+            
+            # 计算嵌入
+            embeddings = self.model.encode(chunks)
+            faiss.normalize_L2(embeddings)  # 归一化向量
+            
+            # 添加到索引
+            self.index.add_with_ids(embeddings, np.arange(len(self.doc_ids), len(self.doc_ids) + len(chunks)))
+            self.doc_ids.extend(chunk_ids)
+            
+            # 保存更新后的索引和ID映射
+            faiss.write_index(self.index, str(self.vector_index_dir / "faiss_index.bin"))
+            
+            async with aiofiles.open(self.vector_index_dir / "doc_ids.json", 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(self.doc_ids))
+                
+            logger.info(f"已更新文档 {doc_id} 的向量索引")
+            
+        except Exception as e:
+            logger.exception(f"更新文档向量出错: {str(e)}")
+            
+    def _chunk_document(self, content: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
         """
-        向量化文本
+        将文档分成多个块
         
         Args:
-            text: 待向量化的文本
+            content: 文档内容
+            chunk_size: 每个块的目标大小(字符数)
+            overlap: 块之间的重叠大小
             
         Returns:
-            文本向量
+            文档块列表
         """
-        try:
-            return self.embedding_model.encode(text)
-        except Exception as e:
-            logger.error(f"文本向量化失败: {str(e)}")
-            raise
-    
-    def search(self, 
-              query: str, 
-              limit: int = 5,
-              filter_expr: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        搜索相关文档
-        
-        Args:
-            query: 搜索查询
-            limit: 返回结果数量
-            filter_expr: 过滤表达式，如"metadata.source == 'manual'"
-            
-        Returns:
-            相关文档列表
-        """
-        try:
-            # 向量化查询
-            query_embedding = self.embed_text(query)
-            
-            # 构建搜索
-            search_query = self.document_table.search(query_embedding)
-            
-            # 添加过滤器
-            if filter_expr:
-                search_query = search_query.where(filter_expr)
-            
-            # 执行搜索
-            results = search_query.limit(limit).to_list()
-            
-            # 处理结果
-            search_results = []
-            for result in results:
-                search_results.append({
-                    "id": result.id,
-                    "text": result.text,
-                    "metadata": result.metadata,
-                    "score": result.score
-                })
-            
-            return search_results
-        
-        except Exception as e:
-            logger.error(f"搜索失败: {str(e)}")
+        if not content:
             return []
-    
-    def delete_document(self, doc_id: str) -> bool:
+            
+        # 按段落拆分
+        paragraphs = [p.strip() for p in content.split('\n') if p.strip()]
+        
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        
+        for para in paragraphs:
+            # 如果段落本身超过块大小，则分割
+            if len(para) > chunk_size:
+                # 如果当前块不为空，先完成当前块
+                if current_chunk:
+                    chunks.append('\n'.join(current_chunk))
+                    # 保留最后一段用于重叠
+                    if overlap > 0 and len(current_chunk) > 0:
+                        current_chunk = [current_chunk[-1]]
+                        current_size = len(current_chunk[-1])
+                    else:
+                        current_chunk = []
+                        current_size = 0
+                        
+                # 分割大段落
+                for i in range(0, len(para), chunk_size - overlap):
+                    chunks.append(para[i:i + chunk_size])
+            else:
+                # 添加段落到当前块
+                if current_size + len(para) > chunk_size:
+                    # 当前块已满，保存并开始新块
+                    chunks.append('\n'.join(current_chunk))
+                    
+                    # 重叠处理
+                    if overlap > 0 and len(current_chunk) > 0:
+                        # 保留最后一段用于重叠
+                        current_chunk = [current_chunk[-1]]
+                        current_size = len(current_chunk[-1])
+                    else:
+                        current_chunk = []
+                        current_size = 0
+                        
+                current_chunk.append(para)
+                current_size += len(para)
+                
+        # 处理最后一个块
+        if current_chunk:
+            chunks.append('\n'.join(current_chunk))
+            
+        return chunks
+        
+    async def delete_document(self, doc_id: str) -> Dict[str, Any]:
         """
         删除文档
         
@@ -383,132 +327,291 @@ class RAGProcessor:
             doc_id: 文档ID
             
         Returns:
-            是否成功删除
+            操作结果字典
         """
         try:
-            # 删除所有属于该文档的块
-            self.document_table.delete(f"metadata.doc_id = '{doc_id}'")
-            logger.info(f"文档删除成功: {doc_id}")
-            return True
-        except Exception as e:
-            logger.error(f"删除文档失败: {str(e)}")
-            return False
-    
-    def list_documents(self) -> List[Dict[str, Any]]:
-        """
-        列出所有文档(不包含块)
-        
-        Returns:
-            文档列表
-        """
-        try:
-            # 获取所有唯一的doc_id
-            query = "SELECT DISTINCT metadata.doc_id, metadata.file_name, metadata.file_type, metadata.created_at FROM documents"
-            results = self.document_table.query(query).to_list()
-            
-            # 处理结果
-            documents = []
-            for result in results:
-                # 提取元数据
-                doc_id = result["metadata.doc_id"]
-                file_name = result["metadata.file_name"]
-                file_type = result["metadata.file_type"]
-                created_at = result["metadata.created_at"]
+            if doc_id not in self.metadata:
+                return {
+                    "success": False,
+                    "error": {"message": f"文档不存在: {doc_id}"}
+                }
                 
-                documents.append({
-                    "id": doc_id,
-                    "file_name": file_name,
-                    "file_type": file_type,
-                    "created_at": created_at
-                })
+            # 删除文档文件
+            doc_file = self.documents_dir / f"{doc_id}.json"
+            if doc_file.exists():
+                os.remove(doc_file)
+                
+            # 从元数据中删除
+            del self.metadata[doc_id]
+            await self._save_metadata()
             
-            return documents
-        
+            # 标记需要重建索引
+            if VECTOR_SEARCH_AVAILABLE and self.model and self.index:
+                asyncio.create_task(self._rebuild_index())
+                
+            return {
+                "success": True,
+                "message": f"文档 {doc_id} 已删除"
+            }
+            
         except Exception as e:
-            logger.error(f"获取文档列表失败: {str(e)}")
-            return []
-    
-    def get_document_chunks(self, doc_id: str) -> List[Dict[str, Any]]:
+            logger.exception(f"删除文档出错: {str(e)}")
+            return {
+                "success": False,
+                "error": {"message": f"删除文档失败: {str(e)}"}
+            }
+            
+    async def search(self, 
+                   query: str, 
+                   top_k: int = 5, 
+                   filter_condition: Optional[str] = None) -> Dict[str, Any]:
         """
-        获取文档的所有块
+        检索文档
+        
+        Args:
+            query: 搜索查询
+            top_k: 返回结果数量
+            filter_condition: 过滤条件
+            
+        Returns:
+            检索结果字典
+        """
+        if not query:
+            return {"success": True, "results": [], "query": query}
+            
+        try:
+            results = []
+            
+            # 使用向量搜索
+            if VECTOR_SEARCH_AVAILABLE and self.model and self.index and len(self.doc_ids) > 0:
+                # 对查询进行编码
+                query_embedding = self.model.encode([query])[0]
+                query_embedding = query_embedding / np.linalg.norm(query_embedding)  # 归一化
+                query_embedding = query_embedding.reshape(1, -1)
+                
+                # 搜索最相似的向量
+                k = min(top_k * 2, len(self.doc_ids))  # 获取更多候选，以便后面过滤
+                scores, indices = self.index.search(query_embedding, k)
+                
+                # 处理结果
+                scored_results = []
+                seen_docs = set()  # 用于去重
+                
+                for i, idx in enumerate(indices[0]):
+                    if idx < 0 or idx >= len(self.doc_ids):
+                        continue
+                        
+                    chunk_ref = self.doc_ids[idx]
+                    doc_id, chunk_id = chunk_ref.split(":")
+                    
+                    # 如果文档ID不在元数据中，则跳过
+                    if doc_id not in self.metadata:
+                        continue
+                        
+                    # 应用过滤条件
+                    if filter_condition:
+                        doc_metadata = self.metadata[doc_id]["metadata"]
+                        # 简单字符串匹配过滤，实际实现可能需要更复杂的逻辑
+                        matched = False
+                        for k, v in doc_metadata.items():
+                            if filter_condition in str(v):
+                                matched = True
+                                break
+                        if not matched:
+                            continue
+                            
+                    # 加载文档
+                    doc_file = self.documents_dir / f"{doc_id}.json"
+                    if not doc_file.exists():
+                        continue
+                        
+                    async with aiofiles.open(doc_file, 'r', encoding='utf-8') as f:
+                        content = await f.read()
+                        doc_data = json.loads(content)
+                        
+                    # 查找块
+                    chunk = None
+                    for c in doc_data["chunks"]:
+                        if str(c["chunk_id"]) == chunk_id:
+                            chunk = c
+                            break
+                            
+                    if not chunk:
+                        continue
+                        
+                    score = float(scores[0][i])
+                    
+                    # 添加到结果
+                    scored_results.append({
+                        "score": score,
+                        "content": chunk["content"],
+                        "metadata": {
+                            "doc_id": doc_id,
+                            "chunk_id": chunk_id,
+                            "source": doc_data["metadata"].get("source", "未知来源"),
+                            **doc_data["metadata"]
+                        }
+                    })
+                    
+                # 按相关性排序并限制结果数量
+                scored_results.sort(key=lambda x: x["score"], reverse=True)
+                
+                # 去重：每个文档只保留最相关的块
+                unique_results = []
+                seen_docs = set()
+                
+                for result in scored_results:
+                    doc_id = result["metadata"]["doc_id"]
+                    if doc_id not in seen_docs:
+                        seen_docs.add(doc_id)
+                        unique_results.append(result)
+                        
+                        if len(unique_results) >= top_k:
+                            break
+                            
+                results = unique_results
+            else:
+                # 回退到简单的文本搜索
+                logger.info("向量搜索不可用，使用简单文本搜索")
+                
+                query_lower = query.lower()
+                scored_results = []
+                
+                # 遍历所有文档
+                for doc_id, info in self.metadata.items():
+                    # 应用过滤条件
+                    if filter_condition:
+                        doc_metadata = info["metadata"]
+                        matched = False
+                        for k, v in doc_metadata.items():
+                            if filter_condition in str(v):
+                                matched = True
+                                break
+                        if not matched:
+                            continue
+                            
+                    # 加载文档
+                    doc_file = self.documents_dir / f"{doc_id}.json"
+                    if not doc_file.exists():
+                        continue
+                        
+                    async with aiofiles.open(doc_file, 'r', encoding='utf-8') as f:
+                        content = await f.read()
+                        doc_data = json.loads(content)
+                        
+                    # 检查每个块
+                    for chunk in doc_data["chunks"]:
+                        chunk_content = chunk["content"].lower()
+                        if query_lower in chunk_content:
+                            # 简单的匹配分数
+                            score = chunk_content.count(query_lower) / len(chunk_content)
+                            
+                            scored_results.append({
+                                "score": score,
+                                "content": chunk["content"],
+                                "metadata": {
+                                    "doc_id": doc_id,
+                                    "chunk_id": chunk["chunk_id"],
+                                    "source": doc_data["metadata"].get("source", "未知来源"),
+                                    **doc_data["metadata"]
+                                }
+                            })
+                            
+                # 按相关性排序
+                scored_results.sort(key=lambda x: x["score"], reverse=True)
+                results = scored_results[:top_k]
+                
+            return {
+                "success": True,
+                "query": query,
+                "results": results
+            }
+            
+        except Exception as e:
+            logger.exception(f"搜索文档出错: {str(e)}")
+            return {
+                "success": False,
+                "query": query,
+                "error": {"message": f"搜索失败: {str(e)}"},
+                "results": []
+            }
+            
+    async def get_documents(self, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+        """
+        获取文档列表
+        
+        Args:
+            limit: 返回的文档数量
+            offset: 开始位置
+            
+        Returns:
+            文档列表字典
+        """
+        try:
+            # 按更新时间排序
+            sorted_docs = sorted(
+                self.metadata.values(),
+                key=lambda x: x["metadata"].get("updated_at", ""),
+                reverse=True
+            )
+            
+            # 应用分页
+            paginated = sorted_docs[offset:offset + limit]
+            
+            return {
+                "success": True,
+                "documents": paginated,
+                "total": len(sorted_docs)
+            }
+            
+        except Exception as e:
+            logger.exception(f"获取文档列表出错: {str(e)}")
+            return {
+                "success": False,
+                "error": {"message": f"获取文档列表失败: {str(e)}"},
+                "documents": [],
+                "total": 0
+            }
+            
+    async def get_document(self, doc_id: str) -> Dict[str, Any]:
+        """
+        获取单个文档
         
         Args:
             doc_id: 文档ID
             
         Returns:
-            文档块列表
+            文档详情字典
         """
         try:
-            # 获取所有属于该文档的块
-            chunks = self.document_table.to_pandas(
-                where=f"metadata.doc_id = '{doc_id}'",
-                columns=["id", "text", "metadata"]
-            )
+            if doc_id not in self.metadata:
+                return {
+                    "success": False,
+                    "error": {"message": f"文档不存在: {doc_id}"}
+                }
+                
+            # 加载文档
+            doc_file = self.documents_dir / f"{doc_id}.json"
+            if not doc_file.exists():
+                return {
+                    "success": False,
+                    "error": {"message": f"文档文件不存在: {doc_id}"}
+                }
+                
+            async with aiofiles.open(doc_file, 'r', encoding='utf-8') as f:
+                content = await f.read()
+                doc_data = json.loads(content)
+                
+            return {
+                "success": True,
+                "document_id": doc_id,
+                "metadata": doc_data["metadata"],
+                "chunks": doc_data["chunks"]
+            }
             
-            # 转换为字典列表
-            chunk_list = []
-            for _, row in chunks.iterrows():
-                chunk_list.append({
-                    "id": row["id"],
-                    "text": row["text"],
-                    "metadata": row["metadata"]
-                })
-            
-            # 按块索引排序
-            chunk_list.sort(key=lambda x: x["metadata"].get("chunk_index", 0))
-            
-            return chunk_list
-        
         except Exception as e:
-            logger.error(f"获取文档块失败: {str(e)}")
-            return []
-    
-    def clear_database(self) -> bool:
-        """
-        清空向量数据库
-        
-        Returns:
-            是否成功清空
-        """
-        try:
-            # 删除并重新创建表
-            if "documents" in self.db.table_names():
-                self.db.drop_table("documents")
-            
-            schema = DocumentChunk.schema()
-            self.document_table = self.db.create_table(
-                "documents", 
-                schema=schema,
-                mode="create"
-            )
-            
-            logger.info("向量数据库已清空")
-            return True
-        
-        except Exception as e:
-            logger.error(f"清空向量数据库失败: {str(e)}")
-            return False
-
-# 全局RAG处理器实例
-_rag_processor = None
-
-def get_rag_processor() -> RAGProcessor:
-    """
-    获取或创建RAG处理器实例
-    
-    Returns:
-        RAGProcessor实例
-    """
-    global _rag_processor
-    
-    if _rag_processor is None:
-        try:
-            _rag_processor = RAGProcessor(
-                db_path=os.path.join(config.DOCS_DIR, "vectordb"),
-                device=config.DEVICE
-            )
-        except ImportError:
-            logger.error("缺少RAG相关库，请安装所需依赖")
-            raise
-    
-    return _rag_processor 
+            logger.exception(f"获取文档出错: {str(e)}")
+            return {
+                "success": False,
+                "error": {"message": f"获取文档失败: {str(e)}"}
+            } 

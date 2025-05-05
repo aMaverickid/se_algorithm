@@ -31,7 +31,7 @@ class IPAdapterControlNet:
         ip_adapter_path=config.IP_ADAPTER_MODEL_PATH,
         ip_model_type="plus",
         scale=0.7,
-        steps=config.NUM_INFERENCE_STEPS,
+        steps=50,
     ):
         """
         初始化IP-Adapter ControlNet模型
@@ -136,8 +136,8 @@ class IPAdapterControlNet:
         face_image,
         depth_image=None,
         controlnet_conditioning_scale=1.0,
-        guidance_scale=config.GUIDANCE_SCALE,
-        num_images=config.NUM_IMAGES_PER_PROMPT,
+        guidance_scale=7.5,
+        num_images=1,
         seed=None,
         output_path=None,
         positive_prompt="masterpiece, best quality, high quality, photorealistic",

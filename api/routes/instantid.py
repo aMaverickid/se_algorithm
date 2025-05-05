@@ -14,10 +14,10 @@ from fastapi import APIRouter, HTTPException
 
 import sys
 from pathlib import Path
-
+import json
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 import config
-from models.instantid import IPAdapterInstantID
+from models.instantid import InstantID
 from utils.image_utils import image_to_base64, base64_to_image, save_output_image
 
 from api.models import (
@@ -32,21 +32,18 @@ router = APIRouter()
 # 全局实例
 instantid_model = None
 
-def get_instantid_model():
+def get_instantid_model() -> InstantID:
     """获取或创建全局InstantID模型实例"""
     global instantid_model
     if instantid_model is None:
         logger.info("初始化InstantID模型...")
-        instantid_model = IPAdapterInstantID(device=config.DEVICE)
+        instantid_model = InstantID()
     return instantid_model
 
 @router.post("/instantid/generate", response_model=InstantIDResponse)
 async def generate_image(request: InstantIDRequest):
     """
-    生成保持身份一致性的人脸图像API
-    
-    使用InstantID技术根据输入的人脸图像和提示词生成新的人脸图像，
-    保持身份一致性。
+    输入人脸图像和提示词，生成新的人脸图像
     """
     try:
         logger.info("InstantID 生成请求开始处理")
@@ -55,41 +52,38 @@ async def generate_image(request: InstantIDRequest):
         model = get_instantid_model()
         
         # 解析人脸图像
-        face_image = base64_to_image(request.face_image)
+        ## face_image = base64_to_image(request.face_image)
+        face_image = Image.open("/home/lujingdian/SE_Proj/test/face.png").convert("RGB")
         
         # 生成图像
-        output_images = model.generate(
+        output_image = model.generate(
             face_image=face_image,
             prompt=request.prompt,
             negative_prompt=request.negative_prompt,
-            num_samples=request.num_samples,
             num_inference_steps=request.num_inference_steps,
             guidance_scale=request.guidance_scale,
             controlnet_conditioning_scale=request.controlnet_conditioning_scale,
             ip_adapter_scale=request.ip_adapter_scale,
-            enhance_face=request.enhance_face,
-            seed=request.seed
         )
         
+        # 保存图像
+        output_image.save("/home/lujingdian/SE_Proj/test/result.png")
         # 转换为Base64
-        output_base64_list = [image_to_base64(img) for img in output_images]
+        output_base64 = image_to_base64(output_image)
         
         # 生成参数记录
         parameters = {
             "prompt": request.prompt,
             "negative_prompt": request.negative_prompt,
-            "num_samples": request.num_samples,
             "num_inference_steps": request.num_inference_steps,
             "guidance_scale": request.guidance_scale,
             "controlnet_conditioning_scale": request.controlnet_conditioning_scale,
             "ip_adapter_scale": request.ip_adapter_scale,
-            "enhance_face": request.enhance_face,
-            "seed": request.seed
         }
         
         return InstantIDResponse(
             success=True,
-            images=output_base64_list,
+            image=output_base64,
             parameters=parameters,
             message="图像生成成功"
         )
@@ -99,75 +93,13 @@ async def generate_image(request: InstantIDRequest):
         logger.error(traceback.format_exc())
         return InstantIDResponse(
             success=False,
-            images=[],
-            parameters={},
             message=f"生成失败: {str(e)}"
         )
 
-@router.post("/instantid/stylize", response_model=InstantIDResponse)
-async def stylize_image(request: InstantIDStylizeRequest):
+@router.get("/instantid/prompt_templates")
+async def get_prompt_templates():
     """
-    基于特定风格生成保持身份一致性的人脸图像API
-    
-    使用InstantID技术结合预设风格，根据输入的人脸图像生成具有特定风格的新图像，
-    同时保持身份一致性。
+    获取InstantID的风格化提示词模板
     """
-    try:
-        logger.info(f"InstantID 风格化生成请求开始处理，风格预设: {request.style_preset}")
-        
-        # 获取模型实例
-        model = get_instantid_model()
-        
-        # 解析人脸图像
-        face_image = base64_to_image(request.face_image)
-        
-        # 生成风格化图像
-        output_images = model.stylize(
-            face_image=face_image,
-            style_preset=request.style_preset,
-            prompt=request.prompt,
-            negative_prompt=request.negative_prompt,
-            num_samples=request.num_samples,
-            num_inference_steps=request.num_inference_steps,
-            guidance_scale=request.guidance_scale,
-            controlnet_conditioning_scale=request.controlnet_conditioning_scale,
-            ip_adapter_scale=request.ip_adapter_scale,
-            style_strength=request.style_strength,
-            enhance_face=request.enhance_face,
-            seed=request.seed
-        )
-        
-        # 转换为Base64
-        output_base64_list = [image_to_base64(img) for img in output_images]
-        
-        # 生成参数记录
-        parameters = {
-            "style_preset": request.style_preset,
-            "prompt": request.prompt,
-            "negative_prompt": request.negative_prompt,
-            "num_samples": request.num_samples,
-            "num_inference_steps": request.num_inference_steps,
-            "guidance_scale": request.guidance_scale,
-            "controlnet_conditioning_scale": request.controlnet_conditioning_scale,
-            "ip_adapter_scale": request.ip_adapter_scale,
-            "style_strength": request.style_strength,
-            "enhance_face": request.enhance_face,
-            "seed": request.seed
-        }
-        
-        return InstantIDResponse(
-            success=True,
-            images=output_base64_list,
-            parameters=parameters,
-            message="风格化图像生成成功"
-        )
-    
-    except Exception as e:
-        logger.error(f"InstantID风格化生成失败: {str(e)}")
-        logger.error(traceback.format_exc())
-        return InstantIDResponse(
-            success=False,
-            images=[],
-            parameters={},
-            message=f"风格化生成失败: {str(e)}"
-        ) 
+    with open("/home/lujingdian/SE_Proj/templates/style/sdxl_styles.json", "r") as f:
+        return json.load(f)

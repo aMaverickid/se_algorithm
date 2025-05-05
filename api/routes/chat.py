@@ -1,218 +1,219 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 """
-大语言模型聊天API路由模块
+聊天API路由处理
 """
-import os
 import logging
-import traceback
 import json
-from typing import Dict, List, Any, Optional
-from fastapi import APIRouter, HTTPException, Request
-from sse_starlette.sse import EventSourceResponse
-
-import sys
-from pathlib import Path
-
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+from typing import Dict, Any, List, Optional
+from fastapi import APIRouter, HTTPException, Depends, Request, Form, UploadFile, File, BackgroundTasks
+from fastapi.responses import StreamingResponse
 import config
-from models.llm import LLMModel
-
-from api.models import (
-    ChatRequest, ChatResponse, ChatMessage
-)
+from models.deepseek import DeepSeekModel
 
 logger = logging.getLogger(__name__)
 
-# 创建路由器，不指定前缀以便在主路由器中使用统一前缀
-router = APIRouter()
+# 创建路由
+router = APIRouter(prefix="/chat", tags=["chat"])
 
-# 全局LLM模型实例池
-llm_models = {}
+# 全局DeepSeek模型实例
+deepseek_model = DeepSeekModel()
 
-def get_llm_model(model_type: str = "deepseek") -> LLMModel:
+@router.post("/completions")
+async def chat_completions(request: Request):
     """
-    获取或创建LLM模型实例
+    处理聊天请求并获得AI响应
     
-    Args:
-        model_type: 模型类型，可选值为'deepseek'或'qwen'
-        
-    Returns:
-        LLMModel实例
-    """
-    
-    # 如果模型已存在，直接返回
-    model_key = f"{model_type}"
-    if model_key in llm_models:
-        return llm_models[model_key]
-
-    # 创建新的模型实例
-    logger.info(f"初始化LLM模型: {model_type}")
-    
-    # 读取配置信息
-    api_key = config.DEEP_SEEK_API_KEY if model_type == "deepseek" else config.QWEN_API_KEY
-
-    model = LLMModel(
-        model_type=model_type,
-        api_key=api_key,
-        device=config.DEVICE
-    )
-    
-    llm_models[model_key] = model
-    return model
-
-@router.post("/chat/completion", response_model=ChatResponse)
-async def chat_completion(request: ChatRequest):
-    """
-    聊天完成API
-    
-    处理用户对话请求，生成模型响应
+    请求格式：
+    {
+        "messages": "JSON序列化的消息数组，如 [{\"role\": \"user\", \"content\": \"你好\"}]",
+        "temperature": 0.7,
+        "max_tokens": 1024,
+        "documents": ["文档内容1", "文档内容2"],
+        "use_rag": false,
+        "rag_query": "用于检索的查询",
+        "rag_top_k": 5,
+        "rag_filter": "过滤条件"
+    }
     """
     try:
-        logger.info(f"聊天请求开始处理，模型: {request.model}")
+        # 解析请求体
+        body = await request.json()
+        messages = body.get("messages", "[]")
+        temperature = float(body.get("temperature", 0.7))
+        max_tokens = int(body.get("max_tokens", 1024))
+        documents = body.get("documents", None)
+        use_rag = body.get("use_rag", False)
+        rag_query = body.get("rag_query", None)
+        rag_top_k = int(body.get("rag_top_k", 5))
+        rag_filter = body.get("rag_filter", None)
         
-        # 获取模型实例
-        model = get_llm_model(request.model)
-        
-        # 如果是流式输出，返回流式响应
-        if request.stream:
-            return await stream_chat_completion(request, model)
-        
-        # 生成响应
-        response = await model.generate(
-            messages=request.messages,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            documents=request.documents,
-            use_rag=request.use_rag,
-            rag_query=request.rag_query,
-            rag_top_k=request.rag_top_k,
-            rag_filter=request.rag_filter,
-            stream=False
+        # 检查messages是否是有效的JSON字符串
+        if isinstance(messages, list):
+            messages = json.dumps(messages)
+            
+        # 调用DeepSeek模型生成响应
+        response = await deepseek_model.generate_response(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            documents=documents,
+            use_rag=use_rag,
+            rag_query=rag_query,
+            rag_top_k=rag_top_k,
+            rag_filter=rag_filter
         )
         
-        return ChatResponse(
-            message=response["message"],
-            model=response["model"],
-            usage=response["usage"],
-            references=response.get("references")
-        )
-    
-    except Exception as e:
-        logger.error(f"聊天请求处理失败: {str(e)}")
-        logger.error(traceback.format_exc())
-        
-        # 返回错误响应
-        error_message = ChatMessage(
-            role="assistant",
-            content=f"处理请求时发生错误: {str(e)}"
-        )
-        
-        return ChatResponse(
-            message=error_message,
-            model=request.model,
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        )
-
-async def stream_chat_completion(request: ChatRequest, model: LLMModel):
-    """
-    流式聊天完成
-    
-    Args:
-        request: 聊天请求
-        model: LLM模型实例
-        
-    Returns:
-        流式事件响应
-    """
-    async def event_generator():
-        try:
-            # 生成流式响应
-            response_queue = await model.generate(
-                messages=request.messages,
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-                documents=request.documents,
-                use_rag=request.use_rag,
-                rag_query=request.rag_query,
-                rag_top_k=request.rag_top_k,
-                rag_filter=request.rag_filter,
-                stream=True
+        # 检查是否为流式响应
+        if response.get("message") == "__STREAM__":
+            stream = response.get("stream")
+            
+            async def response_stream():
+                """返回流式响应"""
+                try:
+                    async for line in stream.content:
+                        line_str = line.decode('utf-8')
+                        if line_str.startswith('data: '):
+                            try:
+                                data = json.loads(line_str[6:])
+                                if data.get('choices') and len(data['choices']) > 0:
+                                    delta = data['choices'][0].get('delta', {})
+                                    content = delta.get('content', '')
+                                    if content:
+                                        yield content
+                            except json.JSONDecodeError:
+                                pass
+                finally:
+                    # 关闭流
+                    if not stream.closed:
+                        stream.close()
+                        
+            return StreamingResponse(
+                response_stream(),
+                media_type="text/plain"
             )
             
-            # 累积内容
-            accumulated_content = ""
-            
-            # 处理队列中的响应
-            while True:
-                chunk = response_queue.get()
-                
-                # 检查是否为结束标记
-                if chunk is None:
-                    # 发送最终完成事件
-                    completion = {
-                        "message": {
-                            "role": "assistant",
-                            "content": accumulated_content
-                        },
-                        "model": request.model,
-                        "usage": {
-                            "prompt_tokens": 0,  # 无法在流式响应中获取确切的令牌使用情况
-                            "completion_tokens": 0,
-                            "total_tokens": 0
-                        },
-                        "finished": True
-                    }
-                    yield json.dumps(completion)
-                    break
-                
-                # 累积内容
-                accumulated_content += chunk
-                
-                # 发送事件
-                event_data = {
-                    "message": {
-                        "role": "assistant",
-                        "content": chunk
-                    },
-                    "model": request.model,
-                    "finished": False
-                }
-                yield json.dumps(event_data)
-                
-        except Exception as e:
-            logger.error(f"流式生成失败: {str(e)}")
-            error_data = {
-                "message": {
-                    "role": "assistant",
-                    "content": f"生成失败: {str(e)}"
-                },
-                "model": request.model,
-                "error": str(e),
-                "finished": True
-            }
-            yield json.dumps(error_data)
-    
-    return EventSourceResponse(event_generator())
+        # 非流式响应
+        return response
+    except Exception as e:
+        logger.exception(f"聊天接口错误: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
 
-@router.get("/chat/models")
-async def list_models():
-    """获取可用的聊天模型列表"""
-    # 支持的模型列表
-    models = [
-        {
-            "id": "deepseek",
-            "name": "DeepSeek",
-            "description": "DeepSeek 大语言模型",
-            "capabilities": ["chat", "code", "reasoning"]
-        },
-        {
-            "id": "qwen",
-            "name": "通义千问",
-            "description": "阿里云通义千问大语言模型",
-            "capabilities": ["chat", "chinese", "reasoning"]
+@router.post("/document/upload")
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: str = Form(None),
+    source: str = Form(None),
+    description: str = Form(None),
+    tags: str = Form(None)
+):
+    """
+    上传文档到RAG系统
+    """
+    try:
+        content = await file.read()
+        text_content = content.decode('utf-8')
+        
+        # 准备元数据
+        metadata = {
+            "title": title or file.filename,
+            "source": source or "用户上传",
+            "description": description or "",
+            "tags": tags.split(",") if tags else [],
+            "filename": file.filename,
+            "content_type": file.content_type
         }
-    ]
+        
+        # 添加文档到RAG系统
+        result = await deepseek_model.rag_manager.add_document(
+            content=text_content,
+            metadata=metadata
+        )
+        
+        return result
+    except Exception as e:
+        logger.exception(f"上传文档错误: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"上传文档失败: {str(e)}")
+        
+@router.get("/document/list")
+async def list_documents(
+    limit: int = 100,
+    offset: int = 0
+):
+    """
+    获取文档列表
+    """
+    try:
+        result = await deepseek_model.rag_manager.get_documents(
+            limit=limit,
+            offset=offset
+        )
+        return result
+    except Exception as e:
+        logger.exception(f"获取文档列表错误: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取文档列表失败: {str(e)}")
+        
+@router.get("/document/{doc_id}")
+async def get_document(doc_id: str):
+    """
+    获取特定文档
+    """
+    try:
+        result = await deepseek_model.rag_manager.get_document(doc_id)
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("error", {}).get("message", "文档不存在"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"获取文档错误: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取文档失败: {str(e)}")
+        
+@router.delete("/document/{doc_id}")
+async def delete_document(doc_id: str):
+    """
+    删除特定文档
+    """
+    try:
+        result = await deepseek_model.rag_manager.delete_document(doc_id)
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("error", {}).get("message", "删除文档失败"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"删除文档错误: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"删除文档失败: {str(e)}")
+        
+@router.post("/document/search")
+async def search_documents(request: Request):
+    """
+    搜索文档
     
-    return {"models": models} 
+    请求格式：
+    {
+        "query": "搜索关键词",
+        "top_k": 5,
+        "filter": "过滤条件"
+    }
+    """
+    try:
+        body = await request.json()
+        query = body.get("query", "")
+        top_k = int(body.get("top_k", 5))
+        filter_condition = body.get("filter", None)
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="搜索查询不能为空")
+            
+        result = await deepseek_model.rag_manager.search(
+            query=query,
+            top_k=top_k,
+            filter_condition=filter_condition
+        )
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"搜索文档错误: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"搜索文档失败: {str(e)}") 

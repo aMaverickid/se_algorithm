@@ -118,9 +118,9 @@ class IPAdapterInpainting:
         mask=None,
         ip_adapter_scale=None,
         prompt="",
-        strength=config.INPAINTING_STRENGTH,
-        num_inference_steps=config.NUM_INFERENCE_STEPS,
-        guidance_scale=config.GUIDANCE_SCALE,
+        strength=0.85,
+        num_inference_steps=50,
+        guidance_scale=7.5,
     ):
         """
         使用IP-Adapter Inpainting生成图像

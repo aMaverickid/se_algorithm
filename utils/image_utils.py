@@ -137,10 +137,10 @@ def base64_to_image(base64_string):
         base64_string: Base64编码的字符串
         
     Returns:
-        PIL图像
+        PIL图像(RGB格式)
     """
     image_data = base64.b64decode(base64_string)
-    return Image.open(BytesIO(image_data))
+    return Image.open(BytesIO(image_data)).convert("RGB")
 
 def save_temp_image(image, prefix="temp_", suffix=".png"):
     """

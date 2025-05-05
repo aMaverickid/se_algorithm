@@ -107,3 +107,11 @@ fuser -k 8000/tcp
 ## IP-Adapter 工作原理
 
 IP-Adapter 模型输入为图片，输出为图片的特征，从而嵌入到扩散模型中，实现对图片的修改和生成。可以将用户上传的人脸图像特征嵌入到模板图像中，生成保持人脸特征的新图像。
+
+
+## InstantID 
+- For higher similarity, increase the weight of controlnet_conditioning_scale (IdentityNet) and ip_adapter_scale (Adapter).若要提高相似度，请增加 controlnet_conditioning_scale (IdentityNet) 和 ip_adapter_scale (Adapter) 的权重。
+- For over-saturation, decrease the ip_adapter_scale. If not work, decrease controlnet_conditioning_scale.
+- For higher text control ability, decrease ip_adapter_scale.要提高文本控制能力，请减小 ip_adapter_scale。
+- For specific styles, choose corresponding base model makes differences.如需了解具体款式，请选择相应的基本型号。
+- We have not supported multi-person yet, only use the largest face as reference facial landmarks.我们还不支持多人，只使用最大的人脸作为参考面部地标。

@@ -28,7 +28,7 @@ class IPAdapterText2Img:
         ip_adapter_path=config.IP_ADAPTER_MODEL_PATH,
         ip_model_type="plus",
         scale=0.6,  # 略微降低IP-Adapter比重，提高文本控制效果
-        steps=config.NUM_INFERENCE_STEPS,
+        steps=50,
     ):
         """
         初始化IP-Adapter文本驱动模型
@@ -118,9 +118,9 @@ class IPAdapterText2Img:
         self,
         face_image,
         prompt,
-        size=(config.OUTPUT_RESOLUTION, config.OUTPUT_RESOLUTION),
-        guidance_scale=config.GUIDANCE_SCALE,
-        num_images=config.NUM_IMAGES_PER_PROMPT,
+        size=(1024, 1024),
+        guidance_scale=7.5,
+        num_images=1,
         seed=None,
         output_path=None,
         negative_prompt="lowres, bad anatomy, bad hands, cropped, worst quality",
@@ -195,8 +195,8 @@ class IPAdapterText2Img:
         self,
         face_image,
         prompts,
-        size=(config.OUTPUT_RESOLUTION, config.OUTPUT_RESOLUTION),
-        guidance_scale=config.GUIDANCE_SCALE,
+        size=(1024, 1024),
+        guidance_scale=7.5,
         seed=None,
         output_dir=None,
         negative_prompt="lowres, bad anatomy, bad hands, cropped, worst quality",

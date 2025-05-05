@@ -123,15 +123,19 @@ class MediapipeTemplateResponse(BaseModel):
 class InstantIDRequest(BaseModel):
     """InstantID生成请求数据模型"""
     face_image: str = Field(..., description="Base64编码的人脸图像")
-    prompt: Optional[str] = Field("", description="生成提示词")
-    negative_prompt: Optional[str] = Field("lowres, bad anatomy, bad hands, cropped, worst quality", description="负面提示词")
-    num_samples: Optional[int] = Field(1, description="生成的样本数量，范围1-4", ge=1, le=4)
+    prompt: Optional[str] = Field("film noir style, ink sketch|vector, male man, highly detailed, sharp focus, ultra sharpness, monochrome, high contrast, dramatic shadows, 1940s style, mysterious, cinematic", description="生成提示词")
+    negative_prompt: Optional[str] = Field("ugly, deformed, noisy, blurry, low contrast, realism, photorealistic, vibrant, colorful", description="负面提示词")
     num_inference_steps: Optional[int] = Field(50, description="推理步数，范围20-100，越高越精细但生成时间越长", ge=20, le=100)
-    guidance_scale: Optional[float] = Field(7.5, description="文本提示相关性控制，范围1-20", ge=1.0, le=20.0)
+    guidance_scale: Optional[float] = Field(5.0, description="文本提示相关性控制，范围1-20", ge=1.0, le=20.0)
     controlnet_conditioning_scale: Optional[float] = Field(0.8, description="ControlNet条件权重，范围0-1", ge=0, le=1.0)
     ip_adapter_scale: Optional[float] = Field(0.8, description="IP-Adapter权重，范围0-1", ge=0, le=1.0)
-    enhance_face: Optional[bool] = Field(True, description="是否增强人脸")
-    seed: Optional[int] = Field(None, description="随机种子，为None时随机生成")
+
+class InstantIDResponse(BaseModel):
+    """InstantID生成响应数据模型"""
+    success: bool = Field(..., description="是否成功")
+    image: Optional[str] = Field(None, description="Base64编码的生成图像")
+    parameters: Optional[Dict[str, Any]] = Field(None, description="生成参数")
+    message: Optional[str] = Field(None, description="附加信息")
 
 class InstantIDStylizeRequest(BaseModel):
     """InstantID风格化生成请求数据模型"""
@@ -148,27 +152,14 @@ class InstantIDStylizeRequest(BaseModel):
     enhance_face: Optional[bool] = Field(True, description="是否增强人脸")
     seed: Optional[int] = Field(None, description="随机种子，为None时随机生成")
 
-class InstantIDResponse(BaseModel):
-    """InstantID生成响应数据模型"""
-    success: bool = Field(..., description="是否成功")
-    images: List[str] = Field(..., description="Base64编码的生成图像列表")
-    parameters: Dict[str, Any] = Field(..., description="生成参数")
-    message: Optional[str] = Field(None, description="附加信息")
 
-# 大语言模型聊天请求/响应模型
-class ChatMessage(BaseModel):
-    """聊天消息"""
-    role: str = Field(..., description="消息角色，可选值：'user', 'assistant', 'system'")
-    content: str = Field(..., description="消息内容")
 
 class ChatRequest(BaseModel):
     """聊天请求数据模型"""
-    messages: List[ChatMessage] = Field(..., description="聊天历史消息")
-    model: Optional[str] = Field("deepseek", description="使用的模型名称，可选值：'deepseek', 'qwen'")
+    messages: str = Field(..., description="用户输入的提示词")
     temperature: Optional[float] = Field(0.7, description="生成温度，值越低越确定性，范围0-2", ge=0, le=2)
     max_tokens: Optional[int] = Field(1024, description="最大生成长度", ge=1, le=4096)
     documents: Optional[List[str]] = Field(None, description="相关文档内容列表，用于指导大语言模型思考")
-    stream: Optional[bool] = Field(False, description="是否流式输出")
     use_rag: Optional[bool] = Field(False, description="是否使用检索增强生成")
     rag_query: Optional[str] = Field(None, description="检索查询，默认使用最后一条用户消息")
     rag_top_k: Optional[int] = Field(5, description="检索返回的文档数量", ge=1, le=20)
@@ -176,7 +167,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     """聊天响应数据模型"""
-    message: ChatMessage = Field(..., description="模型响应消息")
+    message: str = Field(..., description="模型响应消息")
     model: str = Field(..., description="使用的模型名称")
     usage: Dict[str, int] = Field(..., description="token使用情况")
     references: Optional[List[Dict[str, Any]]] = Field(None, description="引用的文档信息")
