@@ -52,15 +52,3 @@ MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 # 日志配置
 LOG_LEVEL = "INFO"
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-# 上传目录配置
-UPLOAD_DIR = ROOT_DIR / "uploads"
-FACE_UPLOAD_DIR = UPLOAD_DIR / "faces"
-TEMPLATE_UPLOAD_DIR = UPLOAD_DIR / "templates"
-MASK_UPLOAD_DIR = UPLOAD_DIR / "masks"
-
-# 确保上传目录存在
-UPLOAD_DIR.mkdir(exist_ok=True)
-FACE_UPLOAD_DIR.mkdir(exist_ok=True)
-TEMPLATE_UPLOAD_DIR.mkdir(exist_ok=True)
-MASK_UPLOAD_DIR.mkdir(exist_ok=True)

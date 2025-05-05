@@ -20,14 +20,7 @@ var/
 .installed.cfg
 *.egg
 
-# 项目特定
-models/cache/
-templates/inpainting/*.png
-templates/depth/*.png
-uploads/
-results/
-!templates/inpainting/README.md
-!templates/depth/README.md
+
 *.log
 .env
 
@@ -46,8 +39,8 @@ venv/
 .venv/
 ENV/ 
 
-face/
-test/
+# 项目特定
+models/cache/
 templates/
-docs/
-InstantID/
+results/
+test/

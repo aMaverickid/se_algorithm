@@ -9,10 +9,8 @@ from api.routes.common import router as common_router
 from api.routes.inpainting import router as inpainting_router
 from api.routes.controlnet import router as controlnet_router
 from api.routes.text2img import router as text2img_router
-from api.routes.templates import router as templates_router
 from api.routes.face import router as face_router
 from api.routes.instantid import router as instantid_router
-from api.routes.chat import router as chat_router
 
 # 创建主路由器
 router = APIRouter(prefix="/api", tags=["ip-adapter"])
@@ -22,10 +20,8 @@ router.include_router(common_router)
 router.include_router(inpainting_router)
 router.include_router(controlnet_router)
 router.include_router(text2img_router)
-router.include_router(templates_router)
 router.include_router(face_router)
 router.include_router(instantid_router)
-router.include_router(chat_router)
 
 # 导出主路由器
 __all__ = ["router"] 
