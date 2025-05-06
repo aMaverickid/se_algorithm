@@ -31,7 +31,7 @@ def get_text2img_model():
         logger.info("初始化Text2Img模型")
         text2img_model = IPAdapterText2Img(
             device=config.DEVICE,
-            sd_model_name=config.STABLE_DIFFUSION_MODEL_PATH,
+            sd_model_name=config.TEXT2IMG_STABLE_DIFFUSION_MODEL_PATH,
             ip_adapter_path=config.IP_ADAPTER_MODEL_PATH,
             ip_model_type="plus",
             scale=0.6,
@@ -43,12 +43,12 @@ def get_text2img_model():
 async def create_text2img(request: Text2ImgRequest, background_tasks: BackgroundTasks):
     """Text2Img API"""
     try:
-        # 解码人脸图像
-        face_image = base64_to_image(request.face_image)
-        
         # 获取或初始化模型
         model = get_text2img_model()
         
+        # 解码人脸图像
+        face_image = base64_to_image(request.face_image)
+                
         # 生成图像
         output_images = model.generate(
             face_image=face_image,

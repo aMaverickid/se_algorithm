@@ -6,7 +6,7 @@ import logging
 import torch
 import numpy as np
 from PIL import Image
-from diffusers import StableDiffusionPipeline, DDIMScheduler
+from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, StableDiffusionInpaintPipelineLegacy, DDIMScheduler, AutoencoderKL
 from safetensors.torch import load_file
 import sys
 from pathlib import Path
@@ -26,6 +26,7 @@ class IPAdapterText2Img:
         device=config.DEVICE,
         sd_model_name=config.STABLE_DIFFUSION_MODEL_PATH,
         ip_adapter_path=config.IP_ADAPTER_MODEL_PATH,
+        vae_model_path=config.VAE_MODEL_PATH,
         ip_model_type="plus",
         scale=0.6,  # 略微降低IP-Adapter比重，提高文本控制效果
         steps=50,
@@ -49,6 +50,18 @@ class IPAdapterText2Img:
         self.ip_model_type = ip_model_type
         self.scale = scale
         self.steps = steps
+
+        self.noise_scheduler = DDIMScheduler(
+            num_train_timesteps=1000,
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            clip_sample=False,
+            set_alpha_to_one=False,
+            steps_offset=1,
+        )
+
+        self.vae = AutoencoderKL.from_pretrained(vae_model_path).to(dtype=torch.float16)
         
         # 加载Stable Diffusion模型
         self._load_pipeline(sd_model_name)
@@ -60,27 +73,35 @@ class IPAdapterText2Img:
         """加载Stable Diffusion模型"""
         logger.info(f"加载Stable Diffusion模型: {sd_model_name}")
         
+        if isinstance(sd_model_name, Path):
+            sd_model_name_str = str(sd_model_name)
+        else:
+            sd_model_name_str = sd_model_name
         # 加载基础SD模型
         self.pipeline = StableDiffusionPipeline.from_pretrained(
-            sd_model_name,
+            sd_model_name_str,
             torch_dtype=self.torch_dtype,
+            scheduler=self.noise_scheduler,
+            vae=self.vae,
+            feature_extractor=None,
+            safety_checker=None,
             cache_dir=config.MODEL_CACHE_DIR
         )
-        
-        # 使用DDIM调度器
-        self.pipeline.scheduler = DDIMScheduler.from_config(
-            self.pipeline.scheduler.config
-        )
-        
+                
         # 设置为推理模式并移动到设备上
         self.pipeline.to(self.device)
         self.pipeline.unet.eval()
         self.pipeline.vae.eval()
         self.pipeline.text_encoder.eval()
         
-        # 启用内存优化（如果使用CUDA）
-        if self.device == "cuda":
+        try:
+            import xformers
             self.pipeline.enable_xformers_memory_efficient_attention()
+            print("xformers memory efficient attention enabled.")
+        except ImportError:
+            print("xformers not installed. Using default attention mechanism.")
+        except Exception as e:
+            print(f"Failed to enable xformers: {e}. Using default attention mechanism.")
     
     def _load_ip_adapter(self):
         """加载IP-Adapter模型"""
@@ -146,7 +167,10 @@ class IPAdapterText2Img:
             face_image = Image.open(face_image).convert("RGB")
         
         # 调整人脸图像大小
-        face_resized = resize_image(face_image, config.FACE_RESOLUTION)
+        if hasattr(config, 'FACE_RESOLUTION') and config.FACE_RESOLUTION is not None:
+            face_resized = resize_image(face_image, config.FACE_RESOLUTION)
+        else:
+            face_resized = face_image
         
         # 设置随机种子
         if seed is not None:

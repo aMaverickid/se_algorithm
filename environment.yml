@@ -1,4 +1,4 @@
-name: ip-adapter
+name: ip-adapterV2
 channels:
   - pytorch
   - nvidia

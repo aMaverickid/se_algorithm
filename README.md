@@ -36,6 +36,7 @@ bash hfd.sh h94/IP-Adapter
 bash hfd.sh lllyasviel/control_v11f1p_sd15_depth
 bash hfd.sh stable-diffusion-v1-5/stable-diffusion-v1-5
 bash hfd.sh openai/clip-vit-large-patch14
+bash hfd.sh stabilityai/sd-vae-ft-mse
 ```
 
 ## 使用说明

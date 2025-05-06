@@ -38,6 +38,7 @@ async def lifespan(app: FastAPI):
     if torch.cuda.is_available():
         logger.info(f"CUDA设备: {torch.cuda.get_device_name(0)}")
         logger.info(f"CUDA内存: {torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024:.2f} GB")
+        logger.info(f"模型目录: {config.MODEL_CACHE_DIR}")
 
     # 上面是 程序启动时执行的逻辑
     yield  
@@ -99,6 +100,7 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+    print(config.MODEL_CACHE_DIR)
     uvicorn.run(
         "app:app", # 模块名称:定义的app实例
         host=config.API_HOST,
